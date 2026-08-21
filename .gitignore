@@ -1,0 +1,11 @@
+# Per-site configuration — never commit. Each deployment carries its own
+# untracked copies; a committed .example will accompany each once the
+# club-agnostic config format exists.
+kiosk.env
+kiosk.config
+pi-hosts.txt
+CAMERAS.md
+kiosk-monitor.html
+
+# OS noise
+.DS_Store
