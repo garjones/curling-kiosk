@@ -1,10 +1,10 @@
 # kiosk — club-agnostic rebuild of the Pi kiosk system
 
-Seed folder for the rebuild of the KCC Pi kiosk system (Raspberry Pi driven
-TVs showing camera feeds or rotating web content). Not yet a git repo; will
-be renamed/rebranded before it becomes one. The umbrella `../CLAUDE.md` rules
-apply: club-agnostic product, KCC is the pilot site, nothing KCC-specific gets
-hardcoded or committed.
+Rebuild of the KCC Pi kiosk system (Raspberry Pi driven TVs showing camera
+feeds or rotating web content). Repo `github.com/garjones/curling-kiosk`
+(private, created 21 Aug 2026); the local folder keeps the short name
+`kiosk/`. The umbrella `../CLAUDE.md` rules apply: club-agnostic product,
+KCC is the pilot site, nothing KCC-specific gets hardcoded or committed.
 
 ## What is in this folder
 
@@ -41,8 +41,8 @@ folder deleted.
 
 ## Rebuild notes (when that work starts)
 
-- New name/branding to be chosen; new repo; this folder's files are the
-  starting point, not sacred.
+- Repo name settled (`curling-kiosk`, 21 Aug 2026); product branding still
+  to be chosen. This folder's files are the starting point, not sacred.
 - Rotate the camera and Pi credentials before anything is published — the old
   values were public on GitHub long enough to assume they were scraped
   (`../HANDOFF.md` §4.4 has the history).
