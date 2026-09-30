@@ -1,10 +1,45 @@
 # Changelog
 
-All notable changes to the KCC Pi Kiosk project are documented here.
+All notable changes to the kiosk are documented here. v10.x and earlier
+were the Kelowna Curling Club system (`curling-pi-kiosk`); v11 is the
+club-agnostic rebuild.
 
 ---
 
-## [v10.3] — Current
+## [v11.0] — in development, not yet on a real Pi
+
+### Changed
+- Everything specific to one club (club name, number of sheets, camera
+  URLs, web pages, reboot time, watchdog host) now comes from the club's
+  `club.conf`. Nothing club-specific is left in the code.
+- The camera login is kept in a separate `secrets.env`, which is
+  committed only as age ciphertext in the club's private site repo and
+  decrypted on the Pi with the club machine key. Passwords are
+  URL-encoded into the camera URLs.
+- Installing is one line over SSH (`bootstrap.sh`) from this public
+  repo. Updates are `kiosk-update` or menu → Software update. v10 fetched
+  loose files, including `kiosk.env` with the passwords, from GitHub on
+  every login.
+- Runs as the Pi's own login user rather than a fixed `kcckiosk` account.
+- The display choice is kept in `/etc/kiosk/display.conf` as named
+  settings rather than a coded line like `HC0102`.
+- The watchdog logs only failures.
+- A Pi with no usable configuration shows a local setup screen that
+  explains the problem.
+
+### Fixed
+- "Any two sheets" for single-digit sheets wrote a config line the
+  engine could not read.
+- Choosing a new display reset a vertical screen to horizontal.
+
+### Migration
+- `kiosk-deploy` converts a v10 Pi in place and keeps its display
+  choice. The v10 `kiosk-monitor.ps1` still works, because `kiosk-run`
+  honours a newer `~/kiosk.config`.
+
+---
+
+## [v10.3]
 
 ### Added (kiosk-monitor.ps1 v5.4)
 - Resolution control in the per-Pi config panel — a dropdown populated dynamically

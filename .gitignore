@@ -1,8 +1,11 @@
-# Per-site configuration — never commit. Each deployment carries its own
-# untracked copies; a committed .example will accompany each once the
-# club-agnostic config format exists.
+# Per-club material never lives here — it belongs in the club's private
+# site repo (see README). These names are guarded in case a v10 file
+# is copied in by mistake.
 kiosk.env
+secrets.env
+*.key
 kiosk.config
+display.conf
 pi-hosts.txt
 CAMERAS.md
 kiosk-monitor.html

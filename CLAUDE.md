@@ -1,58 +1,54 @@
-# kiosk — club-agnostic rebuild of the Pi kiosk system
+# kiosk — club-agnostic Raspberry Pi TV kiosks
 
-Rebuild of the KCC Pi kiosk system (Raspberry Pi driven TVs showing camera
-feeds or rotating web content). Repo `github.com/garjones/curling-kiosk`
-(private, created 21 Aug 2026); the local folder keeps the short name
-`kiosk/`. The umbrella `../CLAUDE.md` rules apply: club-agnostic product,
-KCC is the pilot site, nothing KCC-specific gets hardcoded or committed.
+Repo `github.com/garjones/curling-kiosk` (private until Gareth flips it
+public, which the install model requires — Claude cannot change repo
+visibility). The umbrella `../CLAUDE.md` rules apply: club-agnostic
+product, KCC is the pilot site, nothing club-specific in this repo.
+README.md is the real documentation; read it before changing anything.
 
-## What is in this folder
+## State (29 Sep 2026)
 
-Generic engine files copied 20 Aug 2026 from the production checkout at
-`~/dev/claude/kcc-old/pi-kiosk` (repo `github.com/garjones/pi-kiosk`, private
-since 20 Aug 2026, v10.1, in production at KCC — the Pis install from GitHub).
-That repo was renamed `github.com/garjones/curling-pi-kiosk` on 21 Aug 2026
-and a read-only reference checkout now lives at `../legacy/curling-pi-kiosk/`.
-The copied files:
+v11 built and proven off-Pi; **not yet run on a real Pi**. Parity with
+v10.3 display modes and layout; club values moved to `club.conf`;
+install is `bootstrap.sh` over SSH from this repo (decision 29 Sep
+2026: same machine-key model as streamer; v1 = parity + config; the
+fleet monitor is deferred). `tools/demo.sh` passes 64 checks;
+shellcheck clean at warning level.
 
-- `kiosk.run.sh` — display engine (Chromium kiosk or RTSP mosaic)
-- `kiosk.sh` — whiptail operator menu, presented on SSH login
-- `kiosk-monitor.ps1` — fleet monitor; polls Pis + cameras, writes a
-  self-contained HTML status page
-- `cameras-all.sh` — local mosaic of all cameras, for testing
-- `wifi-watchdog.sh` — cron job, reboots the Pi if the network is gone
-- `kiosk.service`, `unclutter.service` — systemd units
-- `tiny-test.mp4` — test asset
-- `README.md`, `INSTALLATION.md`, `CHANGELOG.md` — docs from the KCC system
+Next: Gareth makes the repo public, adds nothing else (KCC's
+`kiosk/club.conf` + `kiosk/secrets.env.age` are already in
+`../clubs/kcc`), installs one test Pi and works through the checklist
+at the end of INSTALLATION.md. Rollout to the fleet after that, then
+rotate the camera/Pi passwords (they stay as they are during the build,
+by decision 29 Sep 2026 — private network, physical access needed).
 
-**Credentials were scrubbed from these copies** (`root:<password>@`,
-"in `kiosk.env`", `CHANGEME` placeholders in the ps1). The originals in the
-curling-pi-kiosk repo still contain the real values (verified against its
-HEAD, 21 Aug 2026). Do not reintroduce credentials here; the rebuild should
-load them from an untracked per-site env file.
+## Layout
 
-Deliberately NOT copied here (KCC-specific): `kiosk.env` (live camera + Pi
-credentials), `CAMERAS.md` (camera fleet), `pi-hosts.txt` (Pi IPs),
-`kiosk.config` (per-device id), `kiosk-monitor.html` (generated output with
-embedded fleet status). Those live in the curling-pi-kiosk repo and, as the pilot
-site's operational reference, in `../clubs/kcc/kiosk/` (`kiosk.env` holds
-live credentials — never let it near a git repo).
+```
+bootstrap.sh          one-line installer (curl | sudo bash) — public raw URL
+bin/kiosk-run         display engine (ported kiosk.run.sh)
+bin/kiosk-menu        whiptail operator menu (ported kiosk.sh)
+bin/kiosk-deploy      applies <club-dir>/kiosk/ to this Pi; --check; v10 conversion
+bin/kiosk-update      pulls both repos, runs kiosk-deploy
+bin/kiosk-watchdog    network watchdog (ported wifi-watchdog.sh)
+lib/kiosk-common.sh   config loading, URL-encoding, legacy conversion
+systemd/              kiosk.service template, unclutter.service
+tools/demo.sh         the proof; run it after any change
+tools/cameras-all.sh  all cameras at once
+monitor/              v10 kiosk-monitor.ps1, unchanged, KCC-specific — to be rebuilt
+```
 
-The old working checkout at `~/dev/claude/kcc-old` was cleaned up on
-20 Aug 2026: its two uncommitted production changes were pushed to the
-pi-kiosk repo, the five files above copied to `../clubs/kcc/kiosk/`, and the
-folder deleted.
+## Working here
 
-## Rebuild notes (when that work starts)
-
-- Repo name settled (`curling-kiosk`, 21 Aug 2026); product branding still
-  to be chosen. This folder's files are the starting point, not sacred.
-- Rotate the camera and Pi credentials before anything is published — the old
-  values were public on GitHub long enough to assume they were scraped
-  (`../HANDOFF.md` §4.4 has the history).
-- The cameras are Axis, end-of-support, seven unpatched CVEs; the rebuild
-  should not assume they stay.
-- Everything site-specific (camera lists, host lists, credentials, device
-  ids) becomes per-club configuration, following the `clubs/<club>/` pattern.
-- Rewrite this file once the rebuild begins; it currently documents
-  provenance, not architecture.
+- Run `tools/demo.sh` after every change. On the Cowork VM, `age` and
+  `shellcheck` are not installed by default: static binaries from their
+  GitHub releases into `$HOME/bin` (outside mnt/) work.
+- On this mount, in-place edits (`sed -i`, python rewrite) drop the
+  executable bit. `chmod 755` and check `git ls-files -s` before
+  committing.
+- Git in the connected folder needs delete permission (lock files).
+- Provenance: files came from the v10.3 KCC system
+  (`../legacy/curling-pi-kiosk`, still in production, still carrying
+  live credentials at HEAD). This repo's history was checked 29 Sep
+  2026 before going public: no credentials; only KCC subnet mentions
+  and the name "Kelowna" in old docs and the monitor.

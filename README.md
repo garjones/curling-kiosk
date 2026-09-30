@@ -1,235 +1,143 @@
-# KCC Pi Kiosk — System Overview
+# curling-kiosk
 
-**Raspberry Pi Kiosk Configuration for Kelowna Curling Club**
+Raspberry Pi kiosks for a curling club's TVs. Each Pi drives one screen
+and shows one of:
 
----
+- **Two sheets**: four live camera tiles, with the away end on the left,
+  the home end on the right and the sheet numbers down the middle
+- **One sheet**: the two cameras of one sheet
+- **A web page** full-screen, such as signage or a counter `/tv` page
 
-## Overview
+A status bar along the bottom shows the club name, the time and the
+Pi's address. What each screen shows is chosen from a menu that opens
+when you SSH in. No Linux knowledge is needed.
 
-The KCC Pi Kiosk system drives every television screen in the Kelowna Curling Club. Each screen is powered by a Raspberry Pi that can be configured to display one of two modes:
+It works for any club. Everything about a particular club (its name,
+sheets, cameras, pages and camera login) lives in that club's own
+private **site repo**, never here. This repo is public so that a Pi can
+install it with one line.
 
-- **Camera Mode** — live RTSP video feeds from overhead cameras above the curling sheets
-- **Kiosk Mode** — rotating advertising content displayed in a web browser
+> Rebuilt from the Kelowna Curling Club's v10.3 kiosk system
+> (`curling-pi-kiosk`). The screen layout is unchanged. What changed is
+> where configuration comes from and how a Pi is installed. See
+> CHANGELOG.md.
 
-Configuration is performed by connecting to each Pi over SSH. On login, a menu-driven interface is automatically presented to the operator — no technical knowledge of Linux is required.
+## How a Pi gets set up
 
-A browser-based monitoring and management dashboard (`kiosk-monitor.ps1`) runs on a Mac or Windows machine at the club and provides live status, camera thumbnails, and remote management of the entire Pi fleet.
+Setup is done entirely over SSH, from this public repo:
 
----
-
-## Repository
-
+```sh
+curl -fsSL https://raw.githubusercontent.com/garjones/curling-kiosk/main/bootstrap.sh \
+  | sudo bash -s -- --club <owner>/<site-repo>
 ```
-https://github.com/garjones/pi-kiosk
-```
 
-| File | Description |
+It asks for one thing, the **club machine key**. That is an SSH private
+key kept in the club's password manager. The key does two jobs: it is a
+read-only deploy key on the club's site repo, and it decrypts the
+camera login stored there. The streaming nodes
+([curling-streamer](https://github.com/garjones/curling-streamer)) use
+the same key, so there is one key per club.
+
+INSTALLATION.md has the full step-by-step. Running the same line again
+upgrades the Pi. After the first install, **Software update** in the
+menu does the same thing.
+
+## The club's site repo
+
+The club's site repo needs a `kiosk/` folder containing two files:
+
+| File | What it is |
 |---|---|
-| `kiosk.sh` | SSH configuration menu (whiptail TUI). Auto-runs on login and auto-updates from GitHub. |
-| `kiosk.run.sh` | Display engine. Reads the config file on boot and launches the appropriate content. |
-| `kiosk.config` | Single-line config file written by `kiosk.sh` and read by `kiosk.run.sh`. |
-| `kiosk.service` | systemd service that runs `kiosk.run.sh` on boot. |
-| `kiosk.env` | Central config file containing camera credentials, IPs, and kiosk advertising URLs. |
-| `unclutter.service` | systemd service that hides the mouse cursor. |
-| `wifi-watchdog.sh` | Cron script that reboots the Pi if the network is unreachable. |
-| `deploy.sh` | Centralised deploy script for pushing updates and rebooting all Pis from a Mac/Linux machine. |
-| `cameras-all.sh` | Utility script for testing all 24 camera feeds locally. |
-| `kiosk-monitor.ps1` | Cross-platform PowerShell monitoring and management dashboard. |
-| `pi-hosts.txt` | List of Pi IP addresses and hostnames used by `deploy.sh` and `kiosk-monitor.ps1`. |
-| `tiny-test.mp4` | Local test video used in place of RTSP streams during development. |
+| `kiosk/club.conf` | Club name, number of sheets, one camera URL per end of each sheet, the web pages, the daily reboot time and the watchdog host. Start from `club.example.conf`. |
+| `kiosk/secrets.env.age` | `CAM_USER` and `CAM_PASS`, encrypted with [age](https://age-encryption.org) to the machine key's public half. Start from `secrets.example.env`. |
 
----
+Camera URLs write the login as the literal text `${CAM_USER}` and
+`${CAM_PASS}`. The real values are filled in when the screen starts, and
+they are URL-encoded, so any character works in the password.
 
-## Display Modes
+To check an edited `club.conf` before pushing it:
+`bin/kiosk-deploy --check <site-repo>`.
 
-### Camera Mode — Two Sheets (`C`)
+## On the Pi
 
-Displays live feeds for **two curling sheets** simultaneously. Each sheet has two cameras (Home end and Away end), producing a **2×2 video mosaic**. A thin column of sheet number labels runs down the centre, and the Pi's IP address is shown in a bar along the bottom.
-
-```
-┌──────────────┬─────┬──────────────┐
-│  Sheet N     │  N  │  Sheet N     │
-│  Away Camera │     │  Home Camera │
-├──────────────┼─────┼──────────────┤
-│  Sheet M     │  M  │  Sheet M     │
-│  Away Camera │     │  Home Camera │
-├──────────────┴─────┴──────────────┤
-│         IP Address Bar            │
-└───────────────────────────────────┘
-```
-
-### Camera Mode — Single Sheet (`S`)
-
-Displays live feeds for **one curling sheet** only. The Home and Away cameras for that sheet are shown side by side in the bottom half of the screen. The top half is blank.
-
-### Kiosk / Advertising Mode (`K`)
-
-Displays a **web-based advertising carousel** using Chromium in fullscreen kiosk mode. Two advertising channels are available:
-
-| Code | Location |
+| Where | What |
 |---|---|
-| `K01` | Upstairs |
-| `K02` | Practice Ice (Downstairs) |
+| `/opt/curling-kiosk` | this repo (public, pulled over HTTPS) |
+| `/opt/curling-club` | the club's site repo (pulled with the machine key) |
+| `/etc/kiosk/club.conf` | copied from the site repo |
+| `/etc/kiosk/secrets.env` | decrypted camera login; readable only by root and the kiosk user |
+| `/etc/kiosk/machine.key` | the machine key; readable only by root |
+| `/etc/kiosk/display.conf` | what this screen shows; written by the menu |
+| `/etc/kiosk/install.conf` | the kiosk user and site-repo path, used by `kiosk-update` |
+| `/etc/cron.d/curling-kiosk` | the daily reboot, and the watchdog every 15 minutes |
+| `kiosk.service` | runs `kiosk-run` as the Pi's login user at boot |
 
----
-
-## Configuration File Format
-
-The configuration is stored as a single line in `/home/kcckiosk/kiosk.config`.
-
-```
-{Rotation}{Mode}{BottomSheet}{TopSheet}
-```
-
-| Position | Length | Description | Values |
-|---|---|---|---|
-| 1 | 1 char | Screen orientation | `H` = Horizontal, `V` = Vertical |
-| 2 | 1 char | Display mode | `C` = Club cameras, `S` = Single camera, `K` = Kiosk |
-| 3–4 | 2 chars | Bottom sheet number | `01`–`12` |
-| 5–6 | 2 chars | Top sheet number | `01`–`12` |
-
-**Example:** `HC0102` → Horizontal, Club cameras, showing sheets 1 (bottom) and 2 (top).
-
-> For Kiosk mode (`K`), only chars 3–4 are used (to select the advertising channel number).
-
----
-
-## Camera Hardware
-
-The club has **12 curling sheets**, each covered by two [Axis IP cameras](https://www.axis.com):
-
-- **Home camera** — pointed at the home end of the sheet
-- **Away camera** — pointed at the away end of the sheet
-
-Cameras stream via **RTSP** and are accessed using:
-
-```
-rtsp://root:<password>@<camera-ip>/axis-media/media.amp
-```
-
-Cameras are distributed across two internal subnets:
-
-| Subnet | Usage |
+| Command | What it does |
 |---|---|
-| `10.100.1.x` | Primary camera network |
-| `10.200.30.x` | Secondary camera network |
+| `kiosk-run` | The display engine. `KIOSK_DRY_RUN=1 kiosk-run` prints what it would start, with passwords masked. |
+| `kiosk-menu` | The operator menu. It runs on SSH login; Quit leaves you at a normal shell. |
+| `kiosk-update` | Pulls both repos and re-deploys. Run with `sudo`. |
+| `kiosk-deploy` | Applies the site repo to this Pi. Also `--check`. |
+| `kiosk-watchdog` | Reboots the Pi if the watchdog host has been unreachable. |
+| `tools/cameras-all.sh` | Every camera at once, for checking them. `--offline` uses a test clip instead. |
 
----
+If the configuration is missing or wrong, the screen does not go blank.
+It shows what is wrong and the SSH command to fix it.
 
-## System Services
+## Proving it
 
-Two systemd services run on each Pi:
+`tools/demo.sh` runs 64 checks with no Pi, TV or camera:
 
-| Service | Unit File | Purpose |
-|---|---|---|
-| `kiosk` | `kiosk.service` | Launches `kiosk.run.sh` on boot to display content |
-| `unclutter` | `unclutter.service` | Hides the mouse cursor after a short idle period |
+- Every display mode through the engine's dry run, including tile
+  positions and checks that no password is printed
+- The menu, driven by a scripted stand-in for whiptail
+- A full `kiosk-deploy` into a scratch root, including converting a v10
+  Pi and real age decryption with a throwaway key
 
-A **daily cron job** reboots each Pi automatically at 7:00 AM to ensure a clean state each day:
+The deploy checks need `age` and `ssh-keygen`; without them the
+decryption check is skipped and the script says so. The scripts pass
+`shellcheck -x -S warning`.
 
-```cron
-0 7 * * * /sbin/shutdown -r now
-```
+What the demo cannot show is the picture on a real screen. That is the
+single-Pi test at the end of INSTALLATION.md.
 
-A **Wi-Fi watchdog** runs every 15 minutes and reboots the Pi if the network is unreachable:
+## Decisions taken while building
 
-```cron
-*/15 * * * * /bin/bash /home/kcckiosk/wifi-watchdog.sh
-```
+- **Same install model as curling-streamer.** Code comes from this public
+  repo and club settings from a private one. Secrets are committed only
+  as age ciphertext, and one machine key per club unlocks them.
+- **`club.conf` is a shell file, not YAML.** The Pi has bash and nothing
+  that parses YAML. A volunteer can read and edit `KEY="value"`. It is
+  sourced, because it comes from the club's own repo.
+- **`secrets.env` is parsed, never sourced.** Only `CAM_USER` and
+  `CAM_PASS` are taken, so a whole v10 `kiosk.env` also works.
+- **Converting a v10 Pi happens in place.** `kiosk-deploy` turns
+  `~/kiosk.config` into `display.conf` and removes v10's unit symlinks,
+  crontab lines and fetch-from-GitHub `.bashrc` line. The old files in
+  the home directory are left alone.
+- **The v10 monitor keeps working during the move.** `kiosk-run` uses
+  `~/kiosk.config` when it is newer than `display.conf`. That is the
+  file `kiosk-monitor.ps1` writes when it changes a screen.
+- **Two v10 menu faults were fixed while porting.** "Any two sheets" for
+  sheets 3 and 7 wrote `C37`, which the engine could not read. Rotation
+  was also reset to horizontal on every mode change.
+- **The setup screen is local.** An unconfigured Pi shows a local page
+  instead of `whatismyipaddress.com`.
 
----
+## Known gaps
 
-## SSH Configuration Access
+- **The camera URL, password included, is on ffplay's command line.**
+  It is visible in `ps` to anyone logged into the Pi, as it was in v10.
+  ffplay has no other way to take it. The Pi is single-purpose and
+  that login is the kiosk user's anyway.
+- **The fleet monitor is not rebuilt yet.** `monitor/kiosk-monitor.ps1`
+  is the v10 script, still hard-wired to one club. It is deferred until
+  the Pi side is proven.
+- **`unclutter` does nothing under Wayland (labwc).** It is carried over
+  unchanged from v10.
 
-Each Pi can be configured by connecting via SSH:
+## Not yet tested
 
-```
-Host:     10.200.30.xxx
-User:     kcckiosk
-Password: ********
-```
-
-On login, the configuration menu launches automatically. No shell commands are needed — simply navigate the menus to select the desired display mode, confirm, and the Pi will reboot and begin displaying the new content.
-
----
-
-## Configuration Menu Options
-
-| Option | Description |
-|---|---|
-| **Club Cameras** | Select a pre-defined pair of adjacent sheets (1&2, 3&4, etc.) |
-| **Single Camera** | Display one sheet only |
-| **Custom Cameras** | Manually enter any two sheet numbers |
-| **Kiosk** | Select an advertising display channel |
-| **Screen Rotation** | Set screen orientation to Horizontal or Vertical |
-| **Software Update** | Run `apt update` / `apt upgrade` |
-| **Raspberry Config** | Open `raspi-config` for system-level settings |
-| **Install Kiosk** | Install/re-install the kiosk services |
-| **Reboot** | Reboot the Pi immediately |
-
----
-
-## Auto-Update
-
-Each time the configuration menu is opened (i.e. on every SSH login), `kiosk.sh` automatically downloads the latest versions of `kiosk.run.sh`, `kiosk.service`, `kiosk.env`, `wifi-watchdog.sh`, and `unclutter.service` from GitHub before presenting the menu. This ensures all Pis are always running the current software without manual intervention.
-
----
-
-## Monitoring & Management Dashboard
-
-`kiosk-monitor.ps1` is a cross-platform PowerShell script that runs on a Mac or Windows machine at the club. It polls all Pis and cameras every 30 seconds and generates a self-contained `kiosk-monitor.html` dashboard that opens automatically in the browser.
-
-### Features
-
-- **Pi fleet status** — live ping, SSH, and kiosk service status per Pi with colour-coded cards
-- **Current config display** — shows what each Pi is displaying (e.g. `Horizontal · Cameras · Sheets 1 & 2`)
-- **Uptime display** — shows how long each Pi has been running
-- **Screen resolution display** — shows the current screen resolution of each Pi
-- **Last seen timestamp** — shows when a Pi or camera was last reachable when currently offline
-- **Camera thumbnail grid** — live JPEG snapshots from all 24 cameras in a 2-row × 12-column grid (Away and Home rows)
-- **Dark/light mode toggle** — switch between dark and light themes, preference saved across reloads
-- **Live refresh countdown** — header shows time until next refresh; pauses automatically when a panel is open
-- **Remote configuration** — click any Pi card to open a slide-in panel and change its display mode
-- **Rename Pi** — click the edit icon next to the Pi name in the panel to rename it and reboot
-- **Software update** — push latest files from GitHub to a Pi and reboot
-- **System update** — run `apt update && apt upgrade` on a Pi with live streamed output
-- **Install Kiosk** — reinstall kiosk services, cron entries, and autorun on a Pi with live output
-- **Global actions toolbar** — Reboot All, Software Update All, System Update All across the entire fleet
-- **Camera viewer** — launch all 24 live RTSP streams in a 2×12 ffplay overlay
-
-### Requirements
-
-| Tool | Platform | Notes |
-|---|---|---|
-| PowerShell 7+ | Both | `brew install --cask powershell` on macOS |
-| `ssh` | Both | Built-in on macOS/Linux and Windows 10/11 |
-| `sshpass` | macOS/Linux | `brew install sshpass` |
-| `curl` | Both | Built-in on macOS/Linux and Windows 10/11 |
-| `ffplay` | Both | `brew install ffmpeg` — required for Camera Viewer only |
-
-### Running the monitor
-
-**macOS:**
-```bash
-pwsh kiosk-monitor.ps1
-```
-
-**Windows:**
-```powershell
-.\kiosk-monitor.ps1
-```
-
-The dashboard opens automatically in the browser after the first poll completes.
-
----
-
-## Development & Testing
-
-The display script (`kiosk.run.sh`) detects whether it is running on a Raspberry Pi or a macOS/Linux dev machine:
-
-- **On Pi:** Uses live RTSP camera streams and `kmsprint` to detect screen resolution
-- **On Mac/Dev:** Substitutes `tiny-test.mp4` for all camera feeds and assumes a 1920×1080 resolution, opening streams in Google Chrome instead of Chromium
-
----
-
-*© Gareth Jones — gareth@gareth.com*
+- On a real Pi, TV or camera. `tools/demo.sh` covers the logic only.
+- The `bootstrap.sh` clone from GitHub, which needs this repo to be
+  public and the machine key to be a deploy key on the site repo.
