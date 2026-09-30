@@ -1,0 +1,219 @@
+#!/bin/bash
+# --------------------------------------------------------------------------------
+#  kiosk-deploy — apply a club's site repo to THIS Pi. Run as root.
+# --------------------------------------------------------------------------------
+#
+#   kiosk-deploy <club-dir> [--user NAME]   install / update this Pi
+#   kiosk-deploy --check [<club-dir>]       only check the club's club.conf
+#
+#  <club-dir> is a checkout of the club's private site repo (bootstrap.sh
+#  puts it in /opt/curling-club). The contract is one folder:
+#
+#    <club-dir>/kiosk/club.conf        required — see club.example.conf
+#    <club-dir>/kiosk/secrets.env.age  camera login, encrypted with age to
+#                                      the club machine key (an SSH key)
+#
+#  --user is the Pi's login user, who runs the display and gets the menu
+#  on SSH login. Default: whoever ran sudo.
+#
+#  Idempotent: re-run after every `git pull` of either repo (kiosk-update
+#  does exactly that). It also converts a v10 Pi (curling-pi-kiosk) in
+#  place: old kiosk.config becomes display.conf, the old services, cron
+#  lines and .bashrc hook are replaced. The old files in the user's home
+#  are left alone. Exit 78 = something is missing that retrying won't fix.
+#
+#  KIOSK_ROOT=<dir> installs under <dir> instead of / and skips systemctl,
+#  crontab and chown — used by tools/demo.sh to prove the steps.
+# --------------------------------------------------------------------------------
+
+set -eu
+
+PRODUCT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+ROOT="${KIOSK_ROOT:-}"
+export KIOSK_ETC="$ROOT/etc/kiosk"
+KEY="$KIOSK_ETC/machine.key"
+# shellcheck source=../lib/kiosk-common.sh
+. "$PRODUCT/lib/kiosk-common.sh"
+
+die()  { echo "kiosk-deploy: $*" >&2; exit 78; }
+step() { echo "== $*"; }
+usage() { sed -n '4,8p' "$0" >&2; exit 1; }
+real() { [ -z "$ROOT" ]; }   # false while testing under KIOSK_ROOT
+
+CHECK=0; CLUB=""; KUSER="${SUDO_USER:-}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check) CHECK=1; shift;;
+        --user)  KUSER=$2; shift 2;;
+        -h|--help) usage;;
+        -*) echo "kiosk-deploy: unknown option $1" >&2; usage;;
+        *)  [ -z "$CLUB" ] || usage; CLUB=$1; shift;;
+    esac
+done
+
+# ---- --check: validate a club.conf without installing anything ------------
+if [ "$CHECK" = 1 ]; then
+    conf="${CLUB:-/opt/curling-club}/kiosk/club.conf"
+    [ -f "$conf" ] || conf="$CLUB"          # also accept the file itself
+    [ -f "$conf" ] || die "no club.conf at ${CLUB:-/opt/curling-club}/kiosk/"
+    tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+    cp "$conf" "$tmp/club.conf"
+    [ -r "$KIOSK_ETC/secrets.env" ] && cp "$KIOSK_ETC/secrets.env" "$tmp/"
+    KIOSK_ETC="$tmp"; KIOSK_ERROR=""
+    kiosk_load_club || die "$KIOSK_ERROR"
+    if problems=$(kiosk_check_club); then
+        echo "club.conf OK: $CLUB_NAME, $SHEETS sheets, ${#WEB_URL[@]} web page(s)"
+        exit 0
+    fi
+    echo "club.conf has problems:"; echo "$problems"; exit 78
+fi
+
+[ -n "$CLUB" ] || usage
+CLUB="$(cd "$CLUB" && pwd)"
+SRC="$CLUB/kiosk"
+[ -f "$SRC/club.conf" ] || die "$SRC/club.conf not found — is $CLUB a checkout of the club's site repo?"
+if real && [ "$(id -u)" != 0 ]; then echo "run as root: sudo $0 $*" >&2; exit 1; fi
+
+# ---- the kiosk user --------------------------------------------------------
+[ -n "$KUSER" ] || die "which user runs the kiosk? Use --user NAME (the Pi's login user)"
+[ "$KUSER" != root ] || die "the kiosk must not run as root; use --user NAME"
+if real; then
+    ent=$(getent passwd "$KUSER") || die "no user '$KUSER' on this Pi"
+    KHOME=$(echo "$ent" | cut -d: -f6)
+    KGROUP=$(id -gn "$KUSER")
+else
+    KHOME="$ROOT/home/$KUSER"; KGROUP=$(id -gn); mkdir -p "$KHOME"
+fi
+step "kiosk user: $KUSER ($KHOME)"
+
+install -d -m 755 "$KIOSK_ETC"
+
+# ---- secrets ---------------------------------------------------------------
+step "camera login"
+if [ -f "$SRC/secrets.env.age" ]; then
+    [ -f "$KEY" ] || die "$SRC/secrets.env.age needs the club machine key at $KEY.
+Re-run bootstrap.sh (it asks for the key), or paste it from the club password manager:
+    sudo sh -c 'umask 077; cat > $KEY'    (paste the whole block, then Ctrl-D)"
+    command -v age >/dev/null 2>&1 || die "age is not installed (sudo apt-get install age)"
+    umask 077
+    if ! age -d -i "$KEY" -o "$KIOSK_ETC/secrets.env.new" "$SRC/secrets.env.age" 2>"$KIOSK_ETC/.age-err"; then
+        rm -f "$KIOSK_ETC/secrets.env.new"
+        die "could not decrypt $SRC/secrets.env.age with $KEY — wrong machine key for this club? ($(tr '\n' ' ' < "$KIOSK_ETC/.age-err"))"
+    fi
+    rm -f "$KIOSK_ETC/.age-err"
+    mv -f "$KIOSK_ETC/secrets.env.new" "$KIOSK_ETC/secrets.env"
+    umask 022
+    echo "decrypted from the club repo into $KIOSK_ETC/secrets.env"
+elif [ -f "$KIOSK_ETC/secrets.env" ]; then
+    echo "club repo has no kiosk/secrets.env.age; keeping $KIOSK_ETC/secrets.env"
+else
+    : > "$KIOSK_ETC/secrets.env"
+    echo "club repo has no kiosk/secrets.env.age; cameras must not need a login"
+fi
+# the display runs as the kiosk user and needs the login; nobody else does
+chmod 640 "$KIOSK_ETC/secrets.env"
+real && chgrp "$KGROUP" "$KIOSK_ETC/secrets.env"
+
+# ---- club.conf -------------------------------------------------------------
+step "club.conf"
+install -m 644 "$SRC/club.conf" "$KIOSK_ETC/club.conf"
+KIOSK_ERROR=""
+kiosk_load_club || die "$KIOSK_ERROR"
+if ! problems=$(kiosk_check_club); then
+    echo "$problems" | sed 's/^/  /' >&2
+    die "club.conf has problems (listed above) — fix them in the club repo, push, and run the update again"
+fi
+echo "$CLUB_NAME, $SHEETS sheets, ${#WEB_URL[@]} web page(s)"
+
+# ---- display.conf: keep it, or convert a v10 kiosk.config ------------------
+step "this screen"
+if [ -f "$KIOSK_ETC/display.conf" ]; then
+    echo "keeping $KIOSK_ETC/display.conf"
+elif [ -f "$KHOME/kiosk.config" ] && conv=$(kiosk_convert_legacy "$(head -n1 "$KHOME/kiosk.config")"); then
+    printf '%s\n' "$conv" > "$KIOSK_ETC/display.conf"
+    chmod 644 "$KIOSK_ETC/display.conf"
+    echo "converted v10 $KHOME/kiosk.config ($(head -n1 "$KHOME/kiosk.config")) to display.conf"
+else
+    echo "not set up yet — the screen will say so; choose a display from the SSH menu"
+fi
+
+# ---- commands on PATH ------------------------------------------------------
+step "commands"
+install -d "$ROOT/usr/local/bin"
+for c in kiosk-run kiosk-menu kiosk-deploy kiosk-update kiosk-watchdog; do
+    chmod 755 "$PRODUCT/bin/$c"
+    ln -sfn "$PRODUCT/bin/$c" "$ROOT/usr/local/bin/$c"
+done
+echo "kiosk-run kiosk-menu kiosk-deploy kiosk-update kiosk-watchdog -> $PRODUCT/bin"
+
+# remember how this Pi was installed, for kiosk-update
+printf 'KIOSK_USER=%s\nCLUB_DIR=%s\n' "$KUSER" "$CLUB" > "$KIOSK_ETC/install.conf"
+
+# ---- systemd ---------------------------------------------------------------
+step "services"
+UNITS="$ROOT/etc/systemd/system"
+install -d "$UNITS"
+for u in kiosk unclutter; do
+    # v10 symlinked its units from the user's home into /lib/systemd/system
+    old="$ROOT/lib/systemd/system/$u.service"
+    if [ -L "$old" ]; then
+        real && systemctl disable "$u.service" >/dev/null 2>&1 || true
+        rm -f "$old"
+        echo "removed v10 $old"
+    fi
+done
+sed -e "s|@USER@|$KUSER|g" -e "s|@GROUP@|$KGROUP|g" -e "s|@HOME@|$KHOME|g" \
+    "$PRODUCT/systemd/kiosk.service" > "$UNITS/kiosk.service"
+install -m 644 "$PRODUCT/systemd/unclutter.service" "$UNITS/unclutter.service"
+if real; then
+    systemctl daemon-reload
+    systemctl enable kiosk.service unclutter.service >/dev/null 2>&1
+fi
+echo "kiosk.service, unclutter.service installed and enabled"
+
+# ---- cron: daily reboot + network watchdog ---------------------------------
+step "schedule"
+install -d "$ROOT/etc/cron.d"
+{
+    echo "# written by kiosk-deploy from club.conf — edit club.conf, not this"
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if [ -n "$REBOOT_TIME" ]; then
+        echo "$((10#${REBOOT_TIME#*:})) $((10#${REBOOT_TIME%:*})) * * * root /sbin/shutdown -r now"
+    fi
+    echo "*/15 * * * * root /usr/local/bin/kiosk-watchdog"
+} > "$ROOT/etc/cron.d/curling-kiosk"
+chmod 644 "$ROOT/etc/cron.d/curling-kiosk"
+if real && crontab -u "$KUSER" -l >/dev/null 2>&1; then
+    # v10 put the same two jobs in the user's crontab
+    crontab -u "$KUSER" -l | grep -v -e 'wifi-watchdog' -e 'shutdown -r' | crontab -u "$KUSER" - || true
+fi
+echo "daily reboot: ${REBOOT_TIME:-off}; watchdog: ${WATCHDOG_HOST:-off}"
+
+# ---- desktop autostart off (the kiosk owns the screen) ----------------------
+if [ -e "$ROOT/etc/xdg/labwc/autostart" ]; then
+    mv "$ROOT/etc/xdg/labwc/autostart" "$ROOT/etc/xdg/labwc/autostart.disabled"
+    echo "desktop autostart disabled"
+fi
+
+# ---- menu on SSH login -----------------------------------------------------
+step "SSH menu"
+RC="$KHOME/.bashrc"
+touch "$RC"
+tmp=$(mktemp)
+# drop v10's fetch-from-GitHub line and any earlier copy of our block
+sed -e '/raw\.githubusercontent\.com\/garjones\/\(curling-\)\{0,1\}pi-kiosk/d' \
+    -e '/# >>> curling-kiosk menu >>>/,/# <<< curling-kiosk menu <<</d' "$RC" > "$tmp"
+cat >> "$tmp" <<'RCEOF'
+# >>> curling-kiosk menu >>>
+# The kiosk menu on every SSH login. Quit it for a normal shell.
+if [ -n "${SSH_TTY:-}" ] && [ -z "${KIOSK_NO_MENU:-}" ] && command -v kiosk-menu >/dev/null 2>&1; then
+    kiosk-menu
+fi
+# <<< curling-kiosk menu <<<
+RCEOF
+cat "$tmp" > "$RC"; rm -f "$tmp"
+real && chown "$KUSER:$KGROUP" "$RC"
+echo "kiosk-menu runs on SSH login for $KUSER"
+
+echo
+echo "kiosk-deploy: done. The screen picks up changes on the next reboot:  sudo reboot"

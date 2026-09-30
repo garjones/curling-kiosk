@@ -1,0 +1,25 @@
+#!/bin/bash
+# --------------------------------------------------------------------------------
+#  kiosk-update — fetch the latest kiosk software and club settings, apply.
+# --------------------------------------------------------------------------------
+#  Run as root (the menu's "Software update" does: sudo kiosk-update).
+#  Pulls the public product repo and the club's private site repo, then
+#  runs kiosk-deploy. Does not reboot; the caller decides.
+# --------------------------------------------------------------------------------
+
+set -eu
+PRODUCT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CONF=/etc/kiosk/install.conf
+[ "$(id -u)" = 0 ] || { echo "run as root: sudo kiosk-update" >&2; exit 1; }
+[ -r "$CONF" ] || { echo "kiosk-update: $CONF missing — this Pi was never deployed; run bootstrap.sh" >&2; exit 78; }
+
+KIOSK_USER=""; CLUB_DIR=""
+while IFS='=' read -r k v; do
+    case "$k" in KIOSK_USER) KIOSK_USER=$v;; CLUB_DIR) CLUB_DIR=$v;; esac
+done < "$CONF"
+
+echo "== kiosk software: $PRODUCT"
+git -C "$PRODUCT" pull --ff-only
+echo "== club settings: $CLUB_DIR"
+git -C "$CLUB_DIR" pull --ff-only
+exec "$PRODUCT/bin/kiosk-deploy" "$CLUB_DIR" --user "$KIOSK_USER"
