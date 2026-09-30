@@ -61,6 +61,10 @@ if [ "$CHECK" = 1 ]; then
     [ -r "$KIOSK_ETC/secrets.env" ] && cp "$KIOSK_ETC/secrets.env" "$tmp/"
     KIOSK_ETC="$tmp"; KIOSK_ERROR=""
     kiosk_load_club || die "$KIOSK_ERROR"
+    if [ ! -s "$tmp/secrets.env" ]; then
+        CAM_PASS="(not checked)"
+        echo "note: no secrets.env on this machine, so the camera login is not checked"
+    fi
     if problems=$(kiosk_check_club); then
         echo "club.conf OK: $CLUB_NAME, $SHEETS sheets, ${#WEB_URL[@]} web page(s)"
         exit 0
