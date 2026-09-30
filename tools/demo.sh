@@ -53,6 +53,7 @@ CAM_HOME=(
 SEC
 
 echo "---- configuration"
+# shellcheck disable=SC2034  # variables set here are read by kiosk_check_club
 (
     export KIOSK_ETC="$ETC"
     . "$REPO/lib/kiosk-common.sh"
