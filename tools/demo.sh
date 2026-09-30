@@ -113,6 +113,18 @@ printf 'MODE=pair\nTOP=9\nBOTTOM=1\n' > "$ETC/display.conf"
 run >/dev/null
 check "sheet out of range -> setup screen" grep -qF 'Sheets 1 and 9 are not both between 1 and 3.' "$T/kiosk.html"
 
+echo "---- kiosk-run: the v10 monitor's ~/kiosk.config still works"
+FAKEHOME="$T/home"; mkdir -p "$FAKEHOME"
+printf 'MODE=web\nWEB=1\n' > "$ETC/display.conf"
+touch -d '2 minutes ago' "$ETC/display.conf"
+echo "HS0202" > "$FAKEHOME/kiosk.config"
+out=$(HOME="$FAKEHOME" run)
+check "newer kiosk.config wins (sheet 2 single)" [ "$(grep -c '@10.0.0.[57]2/stream' <<<"$out")" = 2 ]
+touch "$ETC/display.conf"; touch -d '2 minutes ago' "$FAKEHOME/kiosk.config"
+out=$(HOME="$FAKEHOME" run)
+check "newer display.conf wins (web page)"  has "$out" "file://$T/kiosk.html"
+rm -rf "$FAKEHOME"
+
 echo "---- kiosk-menu, driven by a scripted stand-in for whiptail"
 # The stub answers each whiptail call from a queue: a menu tag, "yes", or
 # "no"/"back". It also records every menu it was shown.

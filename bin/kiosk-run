@@ -217,6 +217,24 @@ SCRN_HEIGHT=${RES#*x}
 
 
 # --------------------------------------------------------------------------------
+# display.conf, unless the v10 ~/kiosk.config is newer. The v10 fleet
+# monitor (kiosk-monitor.ps1) still changes a screen by writing that file
+# and rebooting; honouring it keeps the monitor useful while the fleet
+# moves over. The menu writes display.conf, so whichever changed last wins.
+# --------------------------------------------------------------------------------
+load_display_or_legacy() {
+    local legacy="$HOME/kiosk.config" conv
+    if [ -f "$legacy" ] && { [ ! -f "$KIOSK_ETC/display.conf" ] || [ "$legacy" -nt "$KIOSK_ETC/display.conf" ]; } &&
+       conv=$(kiosk_convert_legacy "$(head -n1 "$legacy")"); then
+        echo "kiosk-run: using $legacy (newer than display.conf)"
+        kiosk_load_display <(printf '%s\n' "$conv")
+        return
+    fi
+    kiosk_load_display
+}
+
+
+# --------------------------------------------------------------------------------
 # configuration — any problem becomes a readable setup screen
 # --------------------------------------------------------------------------------
 PROBLEM=""
@@ -226,7 +244,7 @@ if ! kiosk_load_club; then
 elif ! problems=$(kiosk_check_club); then
     PROBLEM="club.conf has problems:
 $problems"
-elif ! kiosk_load_display; then
+elif ! load_display_or_legacy; then
     PROBLEM="This screen has not been set up yet."
 else
     case "$MODE" in

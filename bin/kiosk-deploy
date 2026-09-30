@@ -62,6 +62,7 @@ if [ "$CHECK" = 1 ]; then
     KIOSK_ETC="$tmp"; KIOSK_ERROR=""
     kiosk_load_club || die "$KIOSK_ERROR"
     if [ ! -s "$tmp/secrets.env" ]; then
+        # shellcheck disable=SC2034  # read by kiosk_check_club
         CAM_PASS="(not checked)"
         echo "note: no secrets.env on this machine, so the camera login is not checked"
     fi

@@ -121,8 +121,9 @@ kiosk_cam_url() {
 #   TOP=2  BOTTOM=1          (sheets; single uses BOTTOM)
 #   WEB=1                    (which WEB_URL)
 kiosk_load_display() {
+    local file="${1:-$KIOSK_ETC/display.conf}"
     MODE=""; ROTATION="H"; TOP=0; BOTTOM=0; WEB=0
-    [ -r "$KIOSK_ETC/display.conf" ] || return 1
+    [ -r "$file" ] || return 1
     local key val
     while IFS='=' read -r key val || [ -n "$key" ]; do
         val="${val%$'\r'}"
@@ -133,7 +134,7 @@ kiosk_load_display() {
             BOTTOM)   [[ "$val" =~ ^[0-9]+$ ]] && BOTTOM=$((10#$val));;
             WEB)      [[ "$val" =~ ^[0-9]+$ ]] && WEB=$((10#$val));;
         esac
-    done < "$KIOSK_ETC/display.conf"
+    done < "$file"
     [ -n "$MODE" ]
 }
 
