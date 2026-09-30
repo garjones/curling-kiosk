@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 [ -n "$CLUB" ] || usage
-case "$CLUB" in */*) ;; *) die "--club must be owner/repo, e.g. garjones/curling-kcc";; esac
+case "$CLUB" in */*) ;; *) die "--club must be owner/repo, e.g. yourname/curling-yourclub";; esac
 [ "$(id -u)" = 0 ] || die "run with sudo"
 [ -n "$KUSER" ] && [ "$KUSER" != root ] || die "run it as the Pi's login user with sudo, or pass --user NAME"
 command -v apt-get >/dev/null 2>&1 || die "this installer is for Raspberry Pi OS / Debian"
