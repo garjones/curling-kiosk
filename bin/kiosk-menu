@@ -1,249 +1,184 @@
 #!/bin/bash
 # --------------------------------------------------------------------------------
-#  kiosk.sh
+#  kiosk-menu — the operator menu, shown on every SSH login to a kiosk Pi.
 # --------------------------------------------------------------------------------
-#  Raspberry Pi based Kiosks
-# 
-#  Configuration Script. Allows operator to configure actions of Pi
-#  
-#  Version 9.7
+#  Chooses what THIS screen shows and writes /etc/kiosk/display.conf. The
+#  lists (sheets, web pages) come from the club's club.conf, so the menu
+#  fits any club. Quit drops to an ordinary shell.
+#
+#  KIOSK_NO_REBOOT=1  write the file but do not reboot (testing)
 # --------------------------------------------------------------------------------
 #  (C) Copyright Gareth Jones - gareth@gareth.com
 # --------------------------------------------------------------------------------
 
-# configuration parameters
-WT_TITLE="Kelowna Curling Club Kiosk Management v9.7"
-WT_COPYRIGHT="(c) Gareth Jones - gareth@gareth.com"
+set -u
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../lib/kiosk-common.sh
+. "$HERE/../lib/kiosk-common.sh"
+
+VERSION="$(git -C "$HERE/.." describe --tags --always 2>/dev/null || echo dev)"
 WT_HEIGHT=25
 WT_WIDTH=80
 WT_MENU_HEIGHT=$((WT_HEIGHT - 7))
-ROTATION="H"
+
+KIOSK_ERROR=""
+if ! kiosk_load_club; then
+    whiptail --title "Curling kiosk" --msgbox "$KIOSK_ERROR.
+
+This Pi has not been deployed yet. Run the installer again
+(see the curling-kiosk README), then log in again." 14 70
+    exit 1
+fi
+WT_TITLE="$CLUB_NAME kiosk ($VERSION)"
+WT_BACK="$(hostname) - $(hostname -I 2>/dev/null | awk '{print $1}')"
+
+# current settings are the defaults, so changing mode keeps the rotation
+kiosk_load_display || true
+
+
+# --------------------------------------------------------------------------------
+# helpers
+# --------------------------------------------------------------------------------
+wt_menu() {   # wt_menu "prompt" "Cancel label" tag item tag item ...
+    local prompt=$1 cancel=$2; shift 2
+    whiptail --title "$WT_TITLE" --backtitle "$WT_BACK" --menu "$prompt" \
+        $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT --cancel-button "$cancel" --ok-button Select \
+        "$@" 3>&1 1>&2 2>&3
+}
+
+describe_current() {
+    case "${MODE:-}" in
+        pair)   echo "Cameras: sheets $BOTTOM (bottom) and $TOP (top)";;
+        single) echo "Camera: sheet $BOTTOM";;
+        web)    echo "Web page: ${WEB_NAME[WEB]:-number $WEB}";;
+        *)      echo "Not set up";;
+    esac
+}
+
+# save MODE TOP BOTTOM WEB — confirm, write display.conf, reboot
+save() {
+    local mode=$1 top=$2 bottom=$3 web=$4
+    whiptail --title "$WT_TITLE" --yesno "Show this on the screen and reboot?
+
+$(MODE=$mode TOP=$top BOTTOM=$bottom WEB=$web describe_current)
+Screen: $([ "$ROTATION" = V ] && echo vertical || echo horizontal)" 14 70 || return 0
+    local tmp sudo=""
+    tmp=$(mktemp)
+    [ -w "$KIOSK_ETC" ] || sudo=sudo   # /etc/kiosk is root's; the Pi user has sudo
+    if ! printf 'MODE=%s\nROTATION=%s\nTOP=%s\nBOTTOM=%s\nWEB=%s\n' \
+            "$mode" "$ROTATION" "$top" "$bottom" "$web" > "$tmp" ||
+       ! $sudo install -m 644 "$tmp" "$KIOSK_ETC/display.conf"; then
+        rm -f "$tmp"
+        whiptail --msgbox "Could not write $KIOSK_ETC/display.conf. Nothing was changed." 10 70
+        return 0
+    fi
+    rm -f "$tmp"
+    sync
+    if [ "${KIOSK_NO_REBOOT:-0}" = 1 ]; then
+        echo "wrote $KIOSK_ETC/display.conf (KIOSK_NO_REBOOT=1, not rebooting)"; exit 0
+    fi
+    sudo reboot
+}
+
 
 # --------------------------------------------------------------------------------
 # menus
 # --------------------------------------------------------------------------------
-do_menu_main() {
-  # display main menu
-  while true; do
-    # display menu
-    FUN=$(whiptail --title "$WT_TITLE" --backtitle "$WT_COPYRIGHT" --menu "Setup Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT  --cancel-button Quit --ok-button Select \
-    "P1"  "Club Cameras"      \
-    "P2"  "Single Camera"     \
-    "P3"  "Custom Cameras"    \
-    "P4"  "Kiosk"             \
-    "P5"  "Screen Rotation"   \
-    "P6"  "Software Update"   \
-    "P7"  "System Update"     \
-    "P8"  "Raspberry Config"  \
-    "P9"  "Install Kiosk"     \
-    "P10" "Reboot"            \
-    3>&1 1>&2 2>&3)
-    RET=$?
+menu_pairs() {
+    local items=() a b choice
+    while read -r a b; do
+        items+=("C$(kiosk_2d "$a")$(kiosk_2d "$b")" "Sheets $a and $b")
+    done < <(kiosk_pairs)
+    if [ ${#items[@]} -eq 0 ]; then
+        whiptail --msgbox "This club has only one sheet. Use Single camera." 10 60; return 0
+    fi
+    choice=$(wt_menu "Two sheets: lower number at the bottom" Back "${items[@]}") || return 0
+    save pair "$((10#${choice:3:2}))" "$((10#${choice:1:2}))" 0
+}
 
-    # process response
-    if [ $RET -eq 0 ]; then
-      # menu item was selected
-      case "$FUN" in
-        P1)  do_menu_club_cameras;;
-        P2)  do_menu_single_camera;;
-        P3)  do_menu_custom_cameras;;
-        P4)  do_menu_kiosks;;
-        P5)  do_menu_rotation;;
-        P6)  do_auto_update;;
-        P7)  do_apt;;
-        P8)  do_raspi_config;;
-        P9)  do_install;;
-        P10) do_reboot;;
-        *) whiptail --msgbox "Programmer error: unrecognized option" 20 60 1 ;;
-      esac || whiptail --msgbox "There was an error running option $FUN" 20 60 1
+menu_single() {
+    local items=() n choice
+    for ((n = 1; n <= SHEETS; n++)); do items+=("S$(kiosk_2d "$n")" "Sheet $n"); done
+    choice=$(wt_menu "One sheet" Back "${items[@]}") || return 0
+    save single 0 "$((10#${choice:1:2}))" 0
+}
+
+ask_sheet() {   # ask_sheet "prompt" — prints a valid sheet number or fails
+    local v
+    while true; do
+        v=$(whiptail --title "$WT_TITLE" --inputbox "$1 (1 to $SHEETS):" 10 60 3>&1 1>&2 2>&3) || return 1
+        if [[ "$v" =~ ^[0-9]+$ ]] && [ "$((10#$v))" -ge 1 ] && [ "$((10#$v))" -le "$SHEETS" ]; then
+            echo "$((10#$v))"; return 0
+        fi
+        whiptail --msgbox "'$v' is not a sheet number from 1 to $SHEETS." 10 60
+    done
+}
+
+menu_custom() {
+    local bottom top
+    bottom=$(ask_sheet "Sheet for the BOTTOM half") || return 0
+    top=$(ask_sheet "Sheet for the TOP half") || return 0
+    save pair "$top" "$bottom" 0
+}
+
+menu_web() {
+    local items=() n choice
+    for n in "${!WEB_URL[@]}"; do items+=("K$(kiosk_2d "$n")" "${WEB_NAME[n]:-Web page $n}"); done
+    if [ ${#items[@]} -eq 0 ]; then
+        whiptail --msgbox "club.conf has no web pages (WEB_URL). Add them in the club's site repo, then Software update." 12 70
+        return 0
+    fi
+    choice=$(wt_menu "Web page" Back "${items[@]}") || return 0
+    save web 0 0 "$((10#${choice:1:2}))"
+}
+
+menu_rotation() {
+    local r
+    r=$(wt_menu "How is this screen mounted? Choose a display next to apply it." Back \
+        "H" "Horizontal (landscape)" "V" "Vertical (portrait)") || return 0
+    ROTATION=$r
+}
+
+software_update() {
+    whiptail --title "$WT_TITLE" --yesno "Fetch the latest kiosk software and club settings from GitHub, then reboot?" 10 70 || return 0
+    if sudo kiosk-update; then
+        echo; read -r -p "Update done. Press Enter to reboot. " _
+        sudo reboot
     else
-      # quit was selected
-      whiptail --yesno "Are you sure you want to quit?" 20 60 2
-      if [ $? -eq 0 ]; then exit 1; fi
-    fi
-  done
-}
-
-
-do_menu_club_cameras() {
-  # display menu
-  FUN=$(whiptail --title "$WT_TITLE" --backtitle "$WT_COPYRIGHT" --menu "Camera Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT  --cancel-button Back --ok-button Select \
-  "C0102" "Cameras over sheets 1 & 2"       \
-  "C0304" "Cameras over sheets 3 & 4"       \
-  "C0506" "Cameras over sheets 5 & 6"       \
-  "C0708" "Cameras over sheets 7 & 8"       \
-  "C0910" "Cameras over sheets 9 & 10"      \
-  "C1112" "Cameras over sheets 11 & 12"     \
-  3>&1 1>&2 2>&3)
-  RET=$?
-
-  # process response
-  if [ $RET -eq 0 ]; then
-    do_write_config
-  else
-    return 0
-  fi
-}
-
-
-do_menu_single_camera() {
-  # display menu
-  FUN=$(whiptail --title "$WT_TITLE" --backtitle "$WT_COPYRIGHT" --menu "Camera Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT  --cancel-button Back --ok-button Select \
-  "S0101" "Camera over sheet 1"       \
-  "S0202" "Camera over sheet 2"       \
-  "S0303" "Camera over sheet 3"       \
-  "S0404" "Camera over sheet 4"       \
-  "S0505" "Camera over sheet 5"       \
-  "S0606" "Camera over sheet 6"       \
-  "S0707" "Camera over sheet 7"       \
-  "S0808" "Camera over sheet 8"       \
-  "S0909" "Camera over sheet 9"       \
-  "S1010" "Camera over sheet 10"      \
-  "S1111" "Camera over sheet 11"      \
-  "S1212" "Camera over sheet 12"      \
-  3>&1 1>&2 2>&3)
-  RET=$?
-
-  # process response
-  if [ $RET -eq 0 ]; then
-    do_write_config
-  else
-    return 0
-  fi
-}
-
-
-do_menu_custom_cameras() {
-  SHEET1=$(whiptail --inputbox "Enter bottom sheet:" 10 60 3>&1 1>&2 2>&3)
-  SHEET2=$(whiptail --inputbox "Enter top sheet:" 10 60 3>&1 1>&2 2>&3)
-  FUN="C${SHEET1}${SHEET2}"
-  do_write_config
-}
-
-
-do_menu_kiosks() {
-  # display menu
-  FUN=$(whiptail --title "$WT_TITLE" --backtitle "$WT_COPYRIGHT" --menu "Kiosk Options" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT  --cancel-button Back --ok-button Select \
-  "K01" "Kiosk Advertising (Upstairs)"    \
-  "K02" "Kiosk Practice Ice (Downstairs)" \
-  3>&1 1>&2 2>&3)
-  RET=$?
-
-  # process response
-  if [ $RET -eq 0 ]; then
-    do_write_config
-  else
-    return 0
-  fi
-}
-
-
-do_menu_rotation() {
-  # display menu
-  ROTATION=$(whiptail --title "$WT_TITLE" --backtitle "$WT_COPYRIGHT" --menu "Screen Rotation" $WT_HEIGHT $WT_WIDTH $WT_MENU_HEIGHT  --cancel-button Back --ok-button Select \
-  "H" "Screen is Horizontal" \
-  "V" "Screen is Vertical"   \
-  3>&1 1>&2 2>&3)
-  RET=$?
-
-  # process response
-  if [ $RET -eq 0 ]; then
-    whiptail --msgbox "Screen rotation set to '$ROTATION'. Select a display mode to apply and reboot." 20 60
-  else
-    ROTATION="H"
-  fi
-}
-
-
-# --------------------------------------------------------------------------------
-#  functions for actions
-# --------------------------------------------------------------------------------
-
-# autoupdate from git
-do_auto_update() {
-  wget https://raw.githubusercontent.com/garjones/pi-kiosk/main/kiosk.service      --no-verbose -O /home/kcckiosk/kiosk.service
-  wget https://raw.githubusercontent.com/garjones/pi-kiosk/main/kiosk.run.sh       --no-verbose -O /home/kcckiosk/kiosk.run.sh
-  wget https://raw.githubusercontent.com/garjones/pi-kiosk/main/kiosk.env          --no-verbose -O /home/kcckiosk/kiosk.env
-  wget https://raw.githubusercontent.com/garjones/pi-kiosk/main/wifi-watchdog.sh   --no-verbose -O /home/kcckiosk/wifi-watchdog.sh
-  wget https://raw.githubusercontent.com/garjones/pi-kiosk/main/unclutter.service  --no-verbose -O /home/kcckiosk/unclutter.service
-}
-
-# apt
-do_apt() {
-  sudo apt autoremove -y
-  sudo apt update
-  sudo apt upgrade -y
-  sudo apt install unclutter -y
-}
-
-# raspi-config
-do_raspi_config() {
-  sudo raspi-config
-}
-
-# install the kiosk application
-do_install () {
-  # only create unclutter service if the service doesn't already exist
-  if [ ! -e /lib/systemd/system/unclutter.service ]; then
-      # create service symlink
-      sudo ln -s /home/kcckiosk/unclutter.service /lib/systemd/system/unclutter.service
-
-      # enable the unclutter service
-      sudo systemctl enable unclutter.service
-  fi
-
-  # only create kiosk service if the service doesn't already exist
-  if [ ! -e /lib/systemd/system/kiosk.service ]; then
-      # make kiosk.run.sh executable
-      chmod u+x /home/kcckiosk/kiosk.run.sh
-
-      # create service symlink
-      sudo ln -s /home/kcckiosk/kiosk.service /lib/systemd/system/kiosk.service
-
-      # enable the kiosk service
-      sudo systemctl enable kiosk.service
-  fi
-
-  # add cron entries - daily reboot at 7am and wifi watchdog every 15 minutes
-  (echo "0 7 * * * /sbin/shutdown -r now"; echo "*/15 * * * * /bin/bash /home/kcckiosk/wifi-watchdog.sh") | crontab -
-
-  # enable & start the service
-  sudo systemctl enable cron
-  sudo systemctl start cron
-
-  # disable desktop environment
-  if [ -e /etc/xdg/labwc/autostart ]; then
-      sudo mv /etc/xdg/labwc/autostart /etc/xdg/labwc/autostart.disabled
-  fi
-
-  # autorun the kiosk configuration on login
-  if grep -Fxq '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/garjones/pi-kiosk/main/kiosk.sh)"' /home/kcckiosk/.bashrc; then
-      # already exists do nothing
-      echo "[Skipped] Kiosk configuration autorun"
-  else
-      echo "[Done] Kiosk configuration autorun"
-      echo '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/garjones/pi-kiosk/main/kiosk.sh)"' >> /home/kcckiosk/.bashrc
-  fi
-}
-
-# write the configuration file
-do_write_config() {
-    # check if sure, then write it out and reboot
-    whiptail --yesno "Are you sure?" 20 60 2
-    if [ $? -eq 0 ]; then # yes
-      echo "$ROTATION$FUN" > /home/kcckiosk/kiosk.config
-      echo "$ROTATION$FUN"
-      sudo sync
-      sudo reboot
+        echo; read -r -p "Update FAILED - see the messages above. Nothing was rebooted. Press Enter. " _
     fi
 }
 
-# reboot
-do_reboot() {
-  sudo reboot
+system_update() {
+    sudo apt-get update && sudo apt-get -y upgrade && sudo apt-get -y autoremove
+    echo; read -r -p "Press Enter to return to the menu. " _
 }
 
-# --------------------------------------------------------------------------------
-#  execute
-# --------------------------------------------------------------------------------
-do_menu_main
+main_menu() {
+    local fun
+    while true; do
+        fun=$(wt_menu "Now showing: $(describe_current)" Quit \
+            "P1"  "Two sheets (cameras)" \
+            "P2"  "One sheet (cameras)"  \
+            "P3"  "Any two sheets"       \
+            "P4"  "Web page"             \
+            "P5"  "Screen rotation"      \
+            "P6"  "Software update"      \
+            "P7"  "System update (apt)"  \
+            "P8"  "Raspberry Pi config"  \
+            "P9"  "Reboot") || return 0
+        case "$fun" in
+            P1) menu_pairs;;
+            P2) menu_single;;
+            P3) menu_custom;;
+            P4) menu_web;;
+            P5) menu_rotation;;
+            P6) software_update;;
+            P7) system_update;;
+            P8) sudo raspi-config;;
+            P9) whiptail --yesno "Reboot now?" 10 60 && sudo reboot;;
+        esac
+    done
+}
+
+main_menu
