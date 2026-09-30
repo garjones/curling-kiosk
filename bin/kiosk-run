@@ -1,46 +1,90 @@
 #!/bin/bash
 # --------------------------------------------------------------------------------
-#  kiosk.run.sh
+#  kiosk-run — display engine. Started at boot by kiosk.service.
 # --------------------------------------------------------------------------------
-#  Raspberry Pi based Kiosks
-# 
-#  Displays HTML kiosks or RTSP camera feeds in a mosaic on a Raspberry Pi
+#  Reads /etc/kiosk/{club.conf,secrets.env,display.conf} and puts one of
+#  these on the screen:
 #
-#  Version 9
+#    pair    four camera tiles: two sheets, away end left, home end right,
+#            sheet numbers down the middle, status bar along the bottom
+#    single  one sheet in the bottom half (the v10 "single camera" layout)
+#    web     a web page full-screen above the status bar
+#
+#  With no usable configuration it shows a setup screen saying how to fix
+#  it, rather than a blank TV.
+#
+#  Ported from the v10.3 kiosk.run.sh with the club-specific values moved
+#  into club.conf. The screen layout is unchanged.
+#
+#  KIOSK_DRY_RUN=1  print what would be started, passwords masked, and exit
+#  KIOSK_SCREEN=WxH skip screen detection (used with the dry run)
 # --------------------------------------------------------------------------------
 #  (C) Copyright Gareth Jones - gareth@gareth.com
 # --------------------------------------------------------------------------------
 
+set -u
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../lib/kiosk-common.sh
+. "$HERE/../lib/kiosk-common.sh"
+
+DRY="${KIOSK_DRY_RUN:-0}"
+FONT=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf
+HTML_FILE="${TMPDIR:-/tmp}/kiosk.html"
+
 
 # --------------------------------------------------------------------------------
-# functions
+# launching — every external program goes through launch, so the dry run
+# sees exactly what a real run would start
 # --------------------------------------------------------------------------------
-
-# --------------------------------------------------------------------------------
-#  do_kiosk() - Display kiosk
-# --------------------------------------------------------------------------------
-#    1 - URL
-# --------------------------------------------------------------------------------
-do_kiosk() {
-    if $ON_PI; then
-        /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk "$1"
-    else    
-        /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --kiosk "$1"
+masked() {
+    local line="$*" enc
+    if [ -n "${CAM_PASS:-}" ]; then
+        enc="$(kiosk_urlencode "$CAM_PASS")"
+        line="${line//"$enc"/****}"
+        line="${line//"$CAM_PASS"/****}"
     fi
+    printf '%s\n' "$line"
 }
 
+# launch fg|bg command args...
+launch() {
+    local how=$1; shift
+    if [ "$DRY" = 1 ]; then masked "RUN[$how] $*"; return 0; fi
+    if [ "$how" = bg ]; then "$@" & else "$@"; fi
+}
+
+chromium_bin() {
+    local b
+    for b in /usr/bin/chromium /usr/bin/chromium-browser; do
+        [ -x "$b" ] && { echo "$b"; return; }
+    done
+    echo /usr/bin/chromium
+}
+
+html_escape() {
+    local s="$1"
+    s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; s="${s//\"/&quot;}"
+    printf '%s' "$s"
+}
+
+# ffmpeg drawtext treats ' : \ % specially; a label is plain words, so
+# those characters are simply dropped.
+drawtext_safe() { printf '%s' "${1//[\':\\%]/}"; }
+
 
 # --------------------------------------------------------------------------------
-#  do_kiosk_overlay() - Write a local HTML wrapper with status bar and launch it
+#  show_page() - local HTML wrapper: page (or message) above a status bar
 # --------------------------------------------------------------------------------
-#    1 - URL to iframe
-#    2 - Label text for bar (e.g. "10.200.30.11 - kcc-pi-01")
+#    1 - URL to show in an iframe, or empty
+#    2 - message to show instead of a page (HTML-escaped here)
 # --------------------------------------------------------------------------------
-do_kiosk_overlay() {
-    local URL="$1"
-    local LABEL="$2"
-    local HTML_FILE="/tmp/kiosk.html"
-
+show_page() {
+    local url="$1" msg="$2" body
+    if [ -n "$url" ]; then
+        body="<iframe src=\"$(html_escape "$url")\" allowfullscreen></iframe>"
+    else
+        body="<div id=\"msg\">$(html_escape "$msg")</div>"
+    fi
     cat > "$HTML_FILE" << HTMLEOF
 <!DOCTYPE html>
 <html>
@@ -49,12 +93,20 @@ do_kiosk_overlay() {
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { width: 100vw; height: 100vh; overflow: hidden; background: black; }
-  iframe {
+  iframe, #msg {
     position: absolute;
     top: 0; left: 0;
     width: 100%;
     height: calc(100% - 50px);
     border: none;
+  }
+  #msg {
+    color: white;
+    font-family: 'DejaVu Sans', sans-serif;
+    font-size: 40px;
+    line-height: 1.5;
+    padding: 80px;
+    white-space: pre-line;
   }
   #bar {
     position: absolute;
@@ -73,11 +125,11 @@ do_kiosk_overlay() {
 </style>
 </head>
 <body>
-  <iframe src="$URL" allowfullscreen></iframe>
+  $body
   <div id="bar">
-    <span>Kelowna Curling Club</span>
+    <span>$(html_escape "$CLUB_NAME")</span>
     <span id="clock"></span>
-    <span>$LABEL</span>
+    <span>$(html_escape "$MY_IP - $MY_HOSTNAME")</span>
   </div>
   <script>
     function tick() {
@@ -92,327 +144,185 @@ do_kiosk_overlay() {
 </body>
 </html>
 HTMLEOF
-
-    if $ON_PI; then
-        /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk \
-            --disable-web-security --allow-file-access-from-files \
-            "file://$HTML_FILE"
-    else
-        /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --kiosk \
-            --disable-web-security --allow-file-access-from-files \
-            "file://$HTML_FILE"
-    fi
+    launch fg "$(chromium_bin)" --noerrdialogs --disable-infobars --kiosk \
+        --disable-web-security --allow-file-access-from-files \
+        "file://$HTML_FILE"
 }
 
 
 # --------------------------------------------------------------------------------
-#  do_label() - Draw white label, black border, text in centre
+#  do_label() - white box, black border, text in centre (sheet numbers)
 # --------------------------------------------------------------------------------
-#    1 - Label
-#    2 - Width
-#    3 - Height
-#    4 - Left
-#    5 - Top
-#    6 - Border Width
-#    7 - Rotation
+#    1 - Label  2 - Width  3 - Height  4 - Left  5 - Top  6 - Border  7 - Rotation
 # --------------------------------------------------------------------------------
 do_label() {
-  ffplay -noborder -alwaysontop -left $4 -top $5 -f lavfi \
-    "color=white@0:size=$2x$3:rate=1,
+    launch bg ffplay -noborder -alwaysontop -left "$4" -top "$5" -f lavfi \
+        "color=white@0:size=$2x$3:rate=1,
     drawbox=x=0:y=0:w=$2:h=$3:color=black@1:t=$6,
-    drawtext=text='$1':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=48:fontcolor=black:x=(w-text_w)/2:y=(h-text_h)/2:
-    $7" &
+    drawtext=text='$1':fontfile=$FONT:fontsize=48:fontcolor=black:x=(w-text_w)/2:y=(h-text_h)/2:
+    $7"
 }
 
 
 # --------------------------------------------------------------------------------
-#  do_labelip() - Display IP address
+#  do_statusbar() - club name, clock, IP and hostname along the bottom
 # --------------------------------------------------------------------------------
-#    1 - Label
-#    2 - Width
-#    3 - Height
-#    4 - Left
-#    5 - Top
-#    6 - Border Width
-#    7 - Rotation
+#    1 - Width  2 - Height  3 - Left  4 - Top  5 - Border  6 - Rotation
 # --------------------------------------------------------------------------------
-do_labelip() {
-    ffplay -noborder -alwaysontop -left $4 -top $5 -f lavfi \
-    "color=black@0:size=${2}x${3}:rate=2,
-    drawbox=x=0:y=0:w=${2}:h=${3}:color=black@1:t=${6},
-    drawtext=text='Kelowna Curling Club':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=24:fontcolor=white:x=20:y=(h-text_h)/2 ${7},
-    drawtext=text='%{localtime\:%H\:%M}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=24:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2 ${7},
-    drawtext=text='${1} - ${MY_HOSTNAME}':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=24:fontcolor=white:x=(w-text_w-20):y=(h-text_h)/2:
-    $7" &
+do_statusbar() {
+    launch bg ffplay -noborder -alwaysontop -left "$3" -top "$4" -f lavfi \
+        "color=black@0:size=${1}x${2}:rate=2,
+    drawbox=x=0:y=0:w=${1}:h=${2}:color=black@1:t=${5},
+    drawtext=text='$(drawtext_safe "$CLUB_NAME")':fontfile=$FONT:fontsize=24:fontcolor=white:x=20:y=(h-text_h)/2 ${6},
+    drawtext=text='%{localtime\:%H\:%M}':fontfile=$FONT:fontsize=24:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2 ${6},
+    drawtext=text='${MY_IP} - $(drawtext_safe "$MY_HOSTNAME")':fontfile=$FONT:fontsize=24:fontcolor=white:x=(w-text_w-20):y=(h-text_h)/2:
+    $6"
 }
 
 
 # --------------------------------------------------------------------------------
-#  do_video() - Display a video feed with automatic reconnection
+#  do_video() - one camera tile, reconnecting every 5 s if the feed drops
 # --------------------------------------------------------------------------------
-#    $1 - URL
-#    $2 - Width
-#    $3 - Height
-#    $4 - Left
-#    $5 - Top
+#    1 - URL  2 - Width  3 - Height  4 - Left  5 - Top
 # --------------------------------------------------------------------------------
 do_video() {
-  (while true; do
-    ffplay $1 -an -noborder -alwaysontop -x $2 -y $3 -left $4 -top $5
-    sleep 5
-  done) &
+    if [ "$DRY" = 1 ]; then
+        launch bg ffplay "$1" -an -noborder -alwaysontop -x "$2" -y "$3" -left "$4" -top "$5"
+        return
+    fi
+    (while true; do
+        ffplay "$1" -an -noborder -alwaysontop -x "$2" -y "$3" -left "$4" -top "$5"
+        sleep 5
+    done) &
 }
 
-# --------------------------------------------------------------------------------
-# determine if script is running on a raspberry pi
-# --------------------------------------------------------------------------------
-if [[ "$(uname)" == "Linux" ]]; then
-    ON_PI=true
-else
-    ON_PI=false
-fi
 
 # --------------------------------------------------------------------------------
-# load central config (camera IPs, credentials, kiosk URLs)
+# who and where am I
 # --------------------------------------------------------------------------------
-if $ON_PI; then
-    ENV_FILE="/home/kcckiosk/kiosk.env"
+if [ "$DRY" = 1 ]; then
+    MY_IP="255.255.255.255"; MY_HOSTNAME="kiosk-dev"
 else
-    ENV_FILE="kiosk.env"
-fi
-
-if [ ! -f "$ENV_FILE" ]; then
-    # kiosk.env missing - fall back to error screen
-    /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk https://whatismyipaddress.com/
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-# --------------------------------------------------------------------------------
-# constants & variables
-# --------------------------------------------------------------------------------
-
-# home cameras (built from kiosk.env)
-if $ON_PI; then
-    URL_CAM_HOME=(
-      ""
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[1]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[2]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[3]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[4]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[5]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[6]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[7]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[8]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[9]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[10]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[11]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_HOME[12]}/axis-media/media.amp"
-    )
-else
-    URL_CAM_HOME=(
-      ""
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4" 
-    )
-fi
-
-# away cameras (built from kiosk.env)
-if $ON_PI; then
-    URL_CAM_AWAY=(
-      ""
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[1]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[2]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[3]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[4]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[5]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[6]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[7]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[8]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[9]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[10]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[11]}/axis-media/media.amp"
-      "rtsp://${CAM_USER}:${CAM_PASS}@${CAM_AWAY[12]}/axis-media/media.amp"
-    )
-else
-    URL_CAM_AWAY=(
-      ""
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-      "tiny-test.mp4"
-    )
-fi
-
-# URL_KIOSK is loaded directly from kiosk.env
-
-# get config
-if $ON_PI; then
-    KCC_KIOSKCONFIG=$(cat /home/kcckiosk/kiosk.config)
-else
-    KCC_KIOSKCONFIG=$(cat kiosk.config)
-fi
-
-# extract variables from config
-KCC_ROTATION=${KCC_KIOSKCONFIG:0:1}
-KCC_CONFIG=${KCC_KIOSKCONFIG:1:1}
-SHEET_TOP=$((10#${KCC_KIOSKCONFIG:4:2}))
-SHEET_BOT=$((10#${KCC_KIOSKCONFIG:2:2}))
-
-# extract resolution string like "3840x2160"
-if $ON_PI; then
-    RES=$(kmsprint | awk '/Crtc/ { match($0, /[0-9]+x[0-9]+/); print substr($0, RSTART, RLENGTH); exit }')
-    SCRN_WIDTH=$(echo "$RES" | cut -d'x' -f1)
-    SCRN_HEIGHT=$(echo "$RES" | cut -d'x' -f2)
-else
-    SCRN_WIDTH="1920"
-    SCRN_HEIGHT="1080"
-fi
-
-# get ip address and hostname
-if $ON_PI; then
-    MY_IP=$(hostname -I | awk '{print $1}')
+    MY_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
     MY_HOSTNAME=$(hostname)
-else
-    # dev env - set to max characters    
-    MY_IP="255.255.255.255"
-    MY_HOSTNAME="kiosk-dev"
 fi
 
-# label constants
-LBL_WIDTH="100"
-LBL_HEIGHT="50"
-
-# usable height
-USE_H="$((SCRN_HEIGHT-LBL_HEIGHT))"
-
-# ip label variables
-LIP_I=$MY_IP
-LIP_W="$((SCRN_WIDTH))"
-LIP_H="$((LBL_HEIGHT))"
-LIP_L="0"
-LIP_T="$((USE_H))"
-LIP_B="0"
-
-# video variables
-VID_W="$(((SCRN_WIDTH/2)-(LBL_WIDTH/2)))"
-VID_H="$((USE_H/2))"
-VID_L="$((SCRN_WIDTH/2+LBL_WIDTH/2))"
-VID_T="$((USE_H/2))"
-
-# label variables
-LBL_W="$LBL_WIDTH"
-LBL_H="$((USE_H/2))"
-LBL_L="$(((SCRN_WIDTH/2)-(LBL_WIDTH/2)))"
-LBL_T="$((USE_H/2))"
-LBL_B="1"
-
-
-# display variables for debug
-echo "Screen Rotation : $KCC_ROTATION"
-echo "Config          : $KCC_CONFIG"
-echo "Bottom Sheet    : $SHEET_BOT"
-echo "Top Sheet       : $SHEET_TOP"
-echo "Screen Widh     : $SCRN_WIDTH"
-echo "Screen Height   : $SCRN_HEIGHT"
-echo "IP address      : $MY_IP"
-echo "Hostname        : $MY_HOSTNAME"
-echo ""
-echo "Usable Height   : $USE_H"
-echo ""
-echo "Video Width     : $VID_W"
-echo "Video Height    : $VID_H"
-echo "Video Left      : $VID_L"
-echo "Video Top       : $VID_T"
-echo ""
-echo "Label Width     : $LBL_W"
-echo "Label Height    : $LBL_H"
-echo "Label Left      : $LBL_L"
-echo "Label Top       : $LBL_T"
-echo "" 
-echo "IP Width        : $LIP_W"
-echo "IP Height       : $LIP_H"
-echo "IP Left         : $LIP_L"
-echo "IP Top          : $LIP_T"
-if ! $ON_PI; then
-    read -p "Press Enter to continue..."
+RES="${KIOSK_SCREEN:-}"
+if [ -z "$RES" ] && command -v kmsprint >/dev/null 2>&1; then
+    RES=$(kmsprint | awk '/Crtc/ { match($0, /[0-9]+x[0-9]+/); print substr($0, RSTART, RLENGTH); exit }')
 fi
+[[ "$RES" =~ ^[0-9]+x[0-9]+$ ]] || RES="1920x1080"
+SCRN_WIDTH=${RES%x*}
+SCRN_HEIGHT=${RES#*x}
 
-# check for screen rotation
-if [ "$KCC_ROTATION" = "H" ]; then
-    LBL_R=""
-else
-    LBL_R=",transpose=2"
-fi
 
 # --------------------------------------------------------------------------------
-# screen setup
+# configuration — any problem becomes a readable setup screen
 # --------------------------------------------------------------------------------
-if $ON_PI; then
-    # fix chromium errors that may distrupt
-    sed -i 's/"exited_cleanly":false/"exited_cleanly":true/' /home/kcckiosk/.config/chromium/Default/Preferences
-    sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/'   /home/kcckiosk/.config/chromium/Default/Preferences
+PROBLEM=""
+KIOSK_ERROR=""
+if ! kiosk_load_club; then
+    PROBLEM="$KIOSK_ERROR"
+elif ! problems=$(kiosk_check_club); then
+    PROBLEM="club.conf has problems:
+$problems"
+elif ! kiosk_load_display; then
+    PROBLEM="This screen has not been set up yet."
+else
+    case "$MODE" in
+        pair)
+            { [ "$TOP" -ge 1 ] && [ "$TOP" -le "$SHEETS" ] && [ "$BOTTOM" -ge 1 ] && [ "$BOTTOM" -le "$SHEETS" ]; } ||
+                PROBLEM="Sheets $BOTTOM and $TOP are not both between 1 and $SHEETS.";;
+        single)
+            { [ "$BOTTOM" -ge 1 ] && [ "$BOTTOM" -le "$SHEETS" ]; } ||
+                PROBLEM="Sheet $BOTTOM is not between 1 and $SHEETS.";;
+        web)
+            [ -n "${WEB_URL[WEB]:-}" ] ||
+                PROBLEM="Web page $WEB is not in club.conf.";;
+    esac
 fi
+[ -n "$CLUB_NAME" ] || CLUB_NAME="Curling kiosk"
+
+
+# --------------------------------------------------------------------------------
+# layout (unchanged from v10.3)
+# --------------------------------------------------------------------------------
+LBL_WIDTH=100
+LBL_HEIGHT=50
+USE_H=$((SCRN_HEIGHT - LBL_HEIGHT))
+
+BAR_W=$SCRN_WIDTH;  BAR_H=$LBL_HEIGHT;  BAR_L=0;  BAR_T=$USE_H;  BAR_B=0
+
+VID_W=$(((SCRN_WIDTH / 2) - (LBL_WIDTH / 2)))
+VID_H=$((USE_H / 2))
+VID_L=$((SCRN_WIDTH / 2 + LBL_WIDTH / 2))
+VID_T=$((USE_H / 2))
+
+LBL_W=$LBL_WIDTH
+LBL_H=$((USE_H / 2))
+LBL_L=$(((SCRN_WIDTH / 2) - (LBL_WIDTH / 2)))
+LBL_T=$((USE_H / 2))
+LBL_B=1
+
+if [ "$ROTATION" = "V" ]; then LBL_R=",transpose=2"; else LBL_R=""; fi
+
+echo "kiosk-run: ${RES} ${MODE:-unconfigured} rotation=${ROTATION} top=${TOP} bottom=${BOTTOM} web=${WEB} ip=${MY_IP}"
+[ -z "$PROBLEM" ] || echo "kiosk-run: $PROBLEM"
+
+
+# --------------------------------------------------------------------------------
+# chromium remembers crashes and nags on the next start; tell it all was well
+# --------------------------------------------------------------------------------
+PREFS="$HOME/.config/chromium/Default/Preferences"
+if [ "$DRY" != 1 ] && [ -f "$PREFS" ]; then
+    sed -i 's/"exited_cleanly":false/"exited_cleanly":true/; s/"exit_type":"Crashed"/"exit_type":"Normal"/' "$PREFS"
+fi
+
 
 # --------------------------------------------------------------------------------
 # execute
 # --------------------------------------------------------------------------------
-case $KCC_CONFIG in
-    K)
-        do_kiosk_overlay "${URL_KIOSK[SHEET_BOT]}" "$MY_IP - $MY_HOSTNAME"
+if [ -n "$PROBLEM" ]; then
+    show_page "" "$PROBLEM
+
+To set up this screen, connect with SSH:
+    ssh $(id -un)@$MY_IP
+and choose what to show from the menu."
+    MODE=none
+fi
+
+case "$MODE" in
+    web)
+        show_page "${WEB_URL[WEB]}" ""
         ;;
-    C)
-        #         URL                             WIDTH   HEIGHT  LEFT    TOP       BORDER     ROTATION
-        do_video    ${URL_CAM_AWAY[$SHEET_TOP]}   $VID_W  $VID_H  0       0
-        do_video    ${URL_CAM_HOME[$SHEET_TOP]}   $VID_W  $VID_H  $VID_L  0
-        do_video    ${URL_CAM_AWAY[$SHEET_BOT]}   $VID_W  $VID_H  0       $VID_T
-        do_video    ${URL_CAM_HOME[$SHEET_BOT]}   $VID_W  $VID_H  $VID_L  $VID_T
-        do_label    $SHEET_TOP                    $LBL_W  $LBL_H  $LBL_L  0         $LBL_B     $LBL_R    
-        do_label    $SHEET_BOT                    $LBL_W  $LBL_H  $LBL_L  $LBL_T    $LBL_B     $LBL_R
-        sleep 9
-        do_labelip  $LIP_I                        $LIP_W  $LIP_H  $LIP_L  $LIP_T    $LIP_B     $LBL_R  
+    pair)
+        #           URL                              WIDTH   HEIGHT  LEFT    TOP     BORDER  ROTATION
+        do_video    "$(kiosk_cam_url away "$TOP")"    $VID_W  $VID_H  0       0
+        do_video    "$(kiosk_cam_url home "$TOP")"    $VID_W  $VID_H  $VID_L  0
+        do_video    "$(kiosk_cam_url away "$BOTTOM")" $VID_W  $VID_H  0       $VID_T
+        do_video    "$(kiosk_cam_url home "$BOTTOM")" $VID_W  $VID_H  $VID_L  $VID_T
+        do_label    "$TOP"                            $LBL_W  $LBL_H  $LBL_L  0       $LBL_B  "$LBL_R"
+        do_label    "$BOTTOM"                         $LBL_W  $LBL_H  $LBL_L  $LBL_T  $LBL_B  "$LBL_R"
+        [ "$DRY" = 1 ] || sleep 9
+        do_statusbar                                  $BAR_W  $BAR_H  $BAR_L  $BAR_T  $BAR_B  "$LBL_R"
         ;;
-    S)
-        #         URL                             WIDTH   HEIGHT  LEFT    TOP       BORDER     ROTATION
-        do_label    " "                           $VID_W  $VID_H  0       0         0          $LBL_R
-        do_label    " "                           $VID_W  $VID_H  $VID_L  0         0          $LBL_R
-        do_video    ${URL_CAM_AWAY[$SHEET_BOT]}   $VID_W  $VID_H  0       $VID_T
-        do_video    ${URL_CAM_HOME[$SHEET_BOT]}   $VID_W  $VID_H  $VID_L  $VID_T
-        do_label    " "                           $LBL_W  $LBL_H  $LBL_L  0         0          $LBL_R
-        do_label    $SHEET_BOT                    $LBL_W  $LBL_H  $LBL_L  $LBL_T    $LBL_B     $LBL_R
-        sleep 9
-        do_labelip  $LIP_I                        $LIP_W  $LIP_H  $LIP_L  $LIP_T    $LIP_B     $LBL_R
-        ;;	
-    *)
-        # error
-        /usr/bin/chromium --noerrdialogs --disable-infobars --kiosk https://whatismyipaddress.com/
-        sleep 9
-        do_labelip  $LIP_I                        $LIP_W  $LIP_H  $LIP_L  $LIP_T    $LIP_B     $LBL_R
+    single)
+        do_label    " "                               $VID_W  $VID_H  0       0       0       "$LBL_R"
+        do_label    " "                               $VID_W  $VID_H  $VID_L  0       0       "$LBL_R"
+        do_video    "$(kiosk_cam_url away "$BOTTOM")" $VID_W  $VID_H  0       $VID_T
+        do_video    "$(kiosk_cam_url home "$BOTTOM")" $VID_W  $VID_H  $VID_L  $VID_T
+        do_label    " "                               $LBL_W  $LBL_H  $LBL_L  0       0       "$LBL_R"
+        do_label    "$BOTTOM"                         $LBL_W  $LBL_H  $LBL_L  $LBL_T  $LBL_B  "$LBL_R"
+        [ "$DRY" = 1 ] || sleep 9
+        do_statusbar                                  $BAR_W  $BAR_H  $BAR_L  $BAR_T  $BAR_B  "$LBL_R"
         ;;
 esac
 
+[ "$DRY" = 1 ] && exit 0
+
 # --------------------------------------------------------------------------------
-# keep alive
+# keep alive — the service owns the ffplay children; stopping it stops them
 # --------------------------------------------------------------------------------
 while true; do
-   sleep 10
+    sleep 10
 done
