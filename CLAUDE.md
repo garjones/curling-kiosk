@@ -10,7 +10,10 @@ KCC is the pilot site, nothing KCC-specific gets hardcoded or committed.
 
 Generic engine files copied 20 Aug 2026 from the production checkout at
 `~/dev/claude/kcc-old/pi-kiosk` (repo `github.com/garjones/pi-kiosk`, private
-since 20 Aug 2026, v10.1, in production at KCC — the Pis install from GitHub):
+since 20 Aug 2026, v10.1, in production at KCC — the Pis install from GitHub).
+That repo was renamed `github.com/garjones/curling-pi-kiosk` on 21 Aug 2026
+and a read-only reference checkout now lives at `../legacy/curling-pi-kiosk/`.
+The copied files:
 
 - `kiosk.run.sh` — display engine (Chromium kiosk or RTSP mosaic)
 - `kiosk.sh` — whiptail operator menu, presented on SSH login
@@ -24,13 +27,14 @@ since 20 Aug 2026, v10.1, in production at KCC — the Pis install from GitHub):
 
 **Credentials were scrubbed from these copies** (`root:<password>@`,
 "in `kiosk.env`", `CHANGEME` placeholders in the ps1). The originals in the
-pi-kiosk repo still contain the real values. Do not reintroduce credentials
-here; the rebuild should load them from an untracked per-site env file.
+curling-pi-kiosk repo still contain the real values (verified against its
+HEAD, 21 Aug 2026). Do not reintroduce credentials here; the rebuild should
+load them from an untracked per-site env file.
 
 Deliberately NOT copied here (KCC-specific): `kiosk.env` (live camera + Pi
 credentials), `CAMERAS.md` (camera fleet), `pi-hosts.txt` (Pi IPs),
 `kiosk.config` (per-device id), `kiosk-monitor.html` (generated output with
-embedded fleet status). Those live in the pi-kiosk repo and, as the pilot
+embedded fleet status). Those live in the curling-pi-kiosk repo and, as the pilot
 site's operational reference, in `../clubs/kcc/kiosk/` (`kiosk.env` holds
 live credentials — never let it near a git repo).
 
