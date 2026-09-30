@@ -1,17 +1,19 @@
+# kiosk.service — written to /etc/systemd/system by kiosk-deploy, which
+# fills in @USER@ and @HOME@ for this Pi's login user.
 [Unit]
-Description=Chromium Kiosk
+Description=Curling kiosk display
 Wants=graphical.target
 After=graphical.target
 
 [Service]
 Environment=DISPLAY=:0.0
-Environment=XAUTHORITY=/home/kcckiosk/.Xauthority
+Environment=XAUTHORITY=@HOME@/.Xauthority
 Type=simple
-ExecStart=/bin/bash /home/kcckiosk/kiosk.run.sh
+ExecStart=/usr/local/bin/kiosk-run
 Restart=on-abort
 RestartSec=5
-User=kcckiosk
-Group=kcckiosk
+User=@USER@
+Group=@GROUP@
 
 [Install]
 WantedBy=graphical.target

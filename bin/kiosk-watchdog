@@ -1,25 +1,26 @@
 #!/bin/bash
 # --------------------------------------------------------------------------------
-#  wifi-watchdog.sh
+#  kiosk-watchdog — reboot the Pi if the network has gone away.
 # --------------------------------------------------------------------------------
-#  Raspberry Pi based Kiosks
+#  Run as root every 15 minutes from /etc/cron.d/curling-kiosk. Pings
+#  WATCHDOG_HOST from club.conf; if all four pings fail, logs and reboots.
+#  WATCHDOG_HOST empty = do nothing. A Pi whose Wi-Fi drops usually comes
+#  back cleanly after a reboot; that is all this is for.
 #
-#  Checks network connectivity and reboots the Pi if the network is unreachable.
-#  Intended to be run via cron every 15 minutes.
-#
-#  Version 1
+#  Only failures are logged (v10 logged every run, and the file grew for
+#  ever): /var/log/kiosk-watchdog.log
 # --------------------------------------------------------------------------------
 #  (C) Copyright Gareth Jones - gareth@gareth.com
 # --------------------------------------------------------------------------------
 
-PING_HOST="1.1.1.1"
-PING_COUNT=4
-LOG_FILE="/var/log/wifi-watchdog.log"
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../lib/kiosk-common.sh
+. "$HERE/../lib/kiosk-common.sh"
 
-# ping the host
-if ! ping -c $PING_COUNT $PING_HOST > /dev/null 2>&1; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Network unreachable, rebooting..." >> $LOG_FILE
-    sudo /sbin/shutdown -r now
-else
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - Network OK" >> $LOG_FILE
+kiosk_load_club 2>/dev/null || WATCHDOG_HOST="1.1.1.1"
+[ -n "$WATCHDOG_HOST" ] || exit 0
+
+if ! ping -c 4 -W 5 "$WATCHDOG_HOST" > /dev/null 2>&1; then
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $WATCHDOG_HOST unreachable, rebooting" >> /var/log/kiosk-watchdog.log
+    /sbin/shutdown -r now
 fi

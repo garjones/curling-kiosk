@@ -1,132 +1,54 @@
 #!/bin/bash
 # --------------------------------------------------------------------------------
-#  cameras-all.sh
+#  cameras-all.sh — every camera of the club at once, to check them
 # --------------------------------------------------------------------------------
-#  Camera Test
-# 
-#  Displays all cameras locally to test them
+#  Away ends across the top row, home ends across the bottom, one column
+#  per sheet. Reads the same config as the kiosk (KIOSK_ETC, default
+#  /etc/kiosk), so on a deployed Pi it just works:
 #
-#  Version 3
+#      tools/cameras-all.sh               real cameras
+#      tools/cameras-all.sh --offline     tiny-test.mp4 in every tile
+#      KIOSK_SCREEN=1800x1169 tools/cameras-all.sh    set the window area
+#
+#  Press Enter to close everything.
 # --------------------------------------------------------------------------------
 #  (C) Copyright Gareth Jones - gareth@gareth.com
 # --------------------------------------------------------------------------------
 
+set -u
+HERE="$(dirname "$(readlink -f "$0")")"
+# shellcheck source=../lib/kiosk-common.sh
+. "$HERE/../lib/kiosk-common.sh"
 
-# --------------------------------------------------------------------------------
-# functions
-# --------------------------------------------------------------------------------
+KIOSK_ERROR=""
+kiosk_load_club || { echo "cameras-all: $KIOSK_ERROR" >&2; exit 1; }
+if ! problems=$(kiosk_check_club); then
+    echo "cameras-all: club.conf has problems:" >&2; echo "$problems" >&2; exit 1
+fi
+OFFLINE=0; [ "${1:-}" = "--offline" ] && OFFLINE=1
 
+RES="${KIOSK_SCREEN:-1800x1169}"
+SCRN_WIDTH=${RES%x*}
+SCRN_HEIGHT=${RES#*x}
+VID_W=$((SCRN_WIDTH / SHEETS))
+VID_H=$((SCRN_HEIGHT / 2))
 
-# --------------------------------------------------------------------------------
-#  do_label() - Draw white label, black border, text in centre
-# --------------------------------------------------------------------------------
-#    1 - Label
-#    2 - Width
-#    3 - Height
-#    4 - Left
-#    5 - Top
-#    6 - Border Width
-#    7 - Rotation
-# --------------------------------------------------------------------------------
-do_label() {
-  ffplay -noborder -alwaysontop -left $4 -top $5 -f lavfi \
-    "color=white@0:size=$2x$3:rate=1,
-    drawbox=x=0:y=0:w=$2:h=$3:color=black@1:t=$6,
-    drawtext=text='$1':fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:fontsize=48:fontcolor=black:x=(w-text_w)/2:y=(h-text_h)/2:
-    $7" &
-}
-
-# --------------------------------------------------------------------------------
-#  do_video() - Display a video feed
-# --------------------------------------------------------------------------------
-#    $1 - URL
-#    $2 - Width
-#    $3 - Height
-#    $4 - Left
-#    $5 - Top
-# --------------------------------------------------------------------------------
 do_video() {
-  (while true; do
-    ffplay $1 -an -noborder -alwaysontop -x $2 -y $3 -left $4 -top $5
-    sleep 5
-  done) &
+    (while true; do
+        ffplay "$1" -an -noborder -alwaysontop -x "$2" -y "$3" -left "$4" -top "$5"
+        sleep 5
+    done) &
 }
 
+for ((n = 1; n <= SHEETS; n++)); do
+    if [ "$OFFLINE" = 1 ]; then
+        away="$HERE/tiny-test.mp4"; home="$away"
+    else
+        away="$(kiosk_cam_url away "$n")"; home="$(kiosk_cam_url home "$n")"
+    fi
+    do_video "$away" "$VID_W" "$VID_H" $((VID_W * (n - 1))) 0
+    do_video "$home" "$VID_W" "$VID_H" $((VID_W * (n - 1))) "$VID_H"
+done
 
-# --------------------------------------------------------------------------------
-# load central config (camera IPs, credentials, kiosk URLs)
-# --------------------------------------------------------------------------------
-ENV_FILE="kiosk.env"
-
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: Config file not found: $ENV_FILE"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-# --------------------------------------------------------------------------------
-# offline mode
-# --------------------------------------------------------------------------------
-read -p "Offline mode? (y/N): " OFFLINE
-if [[ "$OFFLINE" =~ ^[Yy]$ ]]; then
-    URL_CAM_HOME=("" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" \
-                     "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" \
-                     "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4")
-    URL_CAM_AWAY=("" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" \
-                     "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" \
-                     "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4" "tiny-test.mp4")
-fi
-
-# --------------------------------------------------------------------------------
-# constants & variables
-# --------------------------------------------------------------------------------
-
-# set screen width and height
-SCRN_WIDTH=1800
-SCRN_HEIGHT=1169
-
-# video variables
-VID_W="$((SCRN_WIDTH/12))"
-VID_H="$((SCRN_HEIGHT/2))"
-VID_L="$((VID_W))"
-VID_T="$((SCRN_HEIGHT/2))"
-
-# --------------------------------------------------------------------------------
-# execute
-# --------------------------------------------------------------------------------
-
-#         URL                    WIDTH   HEIGHT  LEFT                 TOP
-# away cameras
-do_video    ${URL_CAM_AWAY[1]}   $VID_W  $VID_H  $((VID_W * 0))       0
-do_video    ${URL_CAM_AWAY[2]}   $VID_W  $VID_H  $((VID_W * 1))       0
-do_video    ${URL_CAM_AWAY[3]}   $VID_W  $VID_H  $((VID_W * 2))       0
-do_video    ${URL_CAM_AWAY[4]}   $VID_W  $VID_H  $((VID_W * 3))       0
-do_video    ${URL_CAM_AWAY[5]}   $VID_W  $VID_H  $((VID_W * 4))       0
-do_video    ${URL_CAM_AWAY[6]}   $VID_W  $VID_H  $((VID_W * 5))       0
-do_video    ${URL_CAM_AWAY[7]}   $VID_W  $VID_H  $((VID_W * 6))       0
-do_video    ${URL_CAM_AWAY[8]}   $VID_W  $VID_H  $((VID_W * 7))       0
-do_video    ${URL_CAM_AWAY[9]}   $VID_W  $VID_H  $((VID_W * 8))       0
-do_video    ${URL_CAM_AWAY[10]}  $VID_W  $VID_H  $((VID_W * 9))       0
-do_video    ${URL_CAM_AWAY[11]}  $VID_W  $VID_H  $((VID_W * 10))      0
-do_video    ${URL_CAM_AWAY[12]}  $VID_W  $VID_H  $((VID_W * 11))      0
-
-# home cameras
-do_video    ${URL_CAM_HOME[1]}   $VID_W  $VID_H  $((VID_W * 0))       $VID_T
-do_video    ${URL_CAM_HOME[2]}   $VID_W  $VID_H  $((VID_W * 1))       $VID_T
-do_video    ${URL_CAM_HOME[3]}   $VID_W  $VID_H  $((VID_W * 2))       $VID_T
-do_video    ${URL_CAM_HOME[4]}   $VID_W  $VID_H  $((VID_W * 3))       $VID_T
-do_video    ${URL_CAM_HOME[5]}   $VID_W  $VID_H  $((VID_W * 4))       $VID_T
-do_video    ${URL_CAM_HOME[6]}   $VID_W  $VID_H  $((VID_W * 5))       $VID_T
-do_video    ${URL_CAM_HOME[7]}   $VID_W  $VID_H  $((VID_W * 6))       $VID_T
-do_video    ${URL_CAM_HOME[8]}   $VID_W  $VID_H  $((VID_W * 7))       $VID_T
-do_video    ${URL_CAM_HOME[9]}   $VID_W  $VID_H  $((VID_W * 8))       $VID_T
-do_video    ${URL_CAM_HOME[10]}  $VID_W  $VID_H  $((VID_W * 9))       $VID_T
-do_video    ${URL_CAM_HOME[11]}  $VID_W  $VID_H  $((VID_W * 10))      $VID_T
-do_video    ${URL_CAM_HOME[12]}  $VID_W  $VID_H  $((VID_W * 11))      $VID_T
-
-# --------------------------------------------------------------------------------
-# keep alive — press Enter to quit
-# --------------------------------------------------------------------------------
-read -p "Press Enter to quit..."
+read -r -p "Press Enter to quit..." _
 kill 0
